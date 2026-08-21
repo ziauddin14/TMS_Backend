@@ -36,11 +36,12 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/api/v1/auth', require('./routes/auth.routes'));
+app.use('/api/v1/users', require('./routes/users.routes'));
+app.use('/api/v1/lookup-lists', require('./routes/lookupList.routes'));
+app.use('/api/v1/tasks', require('./routes/tasks.routes'));
 
 // Remaining resource routers are mounted here in later phases, under the same /api/v1 prefix
 // (docs/05-apis.md §1), e.g.:
-//   app.use('/api/v1/tasks', require('./routes/tasks.routes'));
-//   app.use('/api/v1/users', require('./routes/users.routes'));
 //   app.use('/api/v1/reports', require('./routes/reports.routes'));
 
 app.use(notFoundHandler);

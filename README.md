@@ -2,12 +2,12 @@
 
 Node.js + Express REST API for the Khud Kifalat Shobajat (Dawat-e-Islami) Task Management System.
 
-> Status: **Phase 3 — Authentication only.** Google Sign-In verification, JWT issuance/
-> verification, auth + role middleware, `POST /auth/google`, `GET /auth/me`, and the
-> non-production `POST /auth/dev-login` are implemented. No Users/Lookup/Task CRUD, no business
-> workflows yet. See `../docs/` for the full specification — `../docs/11-auth.md` for the Google
-> Sign-In design, `../docs/06-backend.md` §1 for `auth.service.js`, `../docs/05-apis.md` §2 for
-> the endpoint contract.
+> Status: **Phase 5 — Core Task Management.** Auth + Users + Lookup Lists (Phases 3–4) plus
+> `GET/POST/PATCH /tasks`, `GET /tasks/:id` (Admin-or-assignee), and `PATCH /tasks/:id/close` are
+> implemented, including the `timeStatus`/`performanceRating` recalculation engine. No Task
+> Updates, Attachments, Reports, Notifications, or Frontend yet. See `../docs/` —
+> `../docs/05-apis.md` §5 for the endpoint contract, `../docs/06-backend.md` §4 and
+> `../docs/02-db-design.md` §7 for the recalculation logic.
 
 ## Layering
 
