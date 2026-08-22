@@ -265,6 +265,22 @@ async function closeTask(adminUser, taskId) {
   return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name');
 }
 
+// docs/06-backend.md §4.5 — Phase 6 addition. Called by taskUpdate.service.js's createUpdate,
+// inside the same MongoDB transaction, immediately after a new TaskUpdate is created. Mutates and
+// saves the given Task document; does not re-fetch/re-populate — that's the caller's job. Accepts
+// an optional { session } so the save participates in the caller's transaction.
+async function applyNewUpdateToTask(task, updatePayload, { session } = {}) {
+  task.completionPercent = updatePayload.completionPercent;
+  task.lastUpdateAt = new Date();
+  if (task.completionPercent >= 100 && task.status !== 'closed') {
+    task.status = 'complete';
+  }
+  task.timeStatus = computeTimeStatus(task);
+  task.performanceRating = computePerformanceRating(task.completionPercent, task.timeStatus, task.status);
+  await task.save({ session });
+  return task;
+}
+
 module.exports = {
   listTasks,
   getTaskById,
@@ -273,4 +289,11 @@ module.exports = {
   closeTask,
   computeTimeStatus,
   computePerformanceRating,
+  applyNewUpdateToTask,
+  // Phase 7 addition: exported (unchanged body) so dashboard.service.js can reuse the exact same
+  // RBAC-scoping rule listTasks already uses, per docs/06-backend.md §4.1, instead of
+  // reimplementing it. Calling buildTaskFilter(requestingUser, {}) yields exactly the scoping
+  // clause (nothing else, since every other destructured filter field is undefined) — {} for
+  // Admin, { assignees: requestingUser.id } for a User.
+  buildTaskFilter,
 };

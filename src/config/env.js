@@ -28,10 +28,10 @@ const envSchema = z.object({
   GOOGLE_ALLOWED_HD: z.string().optional(),
 
   // ---- Google Drive (service account) ----
-  // Optional for now: not consumed until the Uploads module is implemented.
-  GOOGLE_DRIVE_CLIENT_EMAIL: z.string().optional(),
-  GOOGLE_DRIVE_PRIVATE_KEY: z.string().optional(),
-  GOOGLE_DRIVE_FOLDER_ID: z.string().optional(),
+  // Required as of the Attachments module (Phase 6) — consumed by googleDrive.service.js.
+  GOOGLE_DRIVE_CLIENT_EMAIL: z.string().min(1, 'GOOGLE_DRIVE_CLIENT_EMAIL is required'),
+  GOOGLE_DRIVE_PRIVATE_KEY: z.string().min(1, 'GOOGLE_DRIVE_PRIVATE_KEY is required'),
+  GOOGLE_DRIVE_FOLDER_ID: z.string().min(1, 'GOOGLE_DRIVE_FOLDER_ID is required'),
 
   // ---- Email / SMTP ----
   // Optional for now: not consumed until the Notifications module is implemented.

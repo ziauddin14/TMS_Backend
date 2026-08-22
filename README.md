@@ -2,12 +2,14 @@
 
 Node.js + Express REST API for the Khud Kifalat Shobajat (Dawat-e-Islami) Task Management System.
 
-> Status: **Phase 5 — Core Task Management.** Auth + Users + Lookup Lists (Phases 3–4) plus
-> `GET/POST/PATCH /tasks`, `GET /tasks/:id` (Admin-or-assignee), and `PATCH /tasks/:id/close` are
-> implemented, including the `timeStatus`/`performanceRating` recalculation engine. No Task
-> Updates, Attachments, Reports, Notifications, or Frontend yet. See `../docs/` —
-> `../docs/05-apis.md` §5 for the endpoint contract, `../docs/06-backend.md` §4 and
-> `../docs/02-db-design.md` §7 for the recalculation logic.
+> Status: **Phase 7 — Dashboard + KPI.** Phases 1–6 plus `GET /dashboard/summary` (byStatus/
+> byPerformance/total, aggregation-pipeline-based, RBAC-scoped identically to `GET /tasks`) are
+> implemented. No Reports, Notifications, or Frontend yet. See `../docs/` — `../docs/05-apis.md`
+> §8 for the endpoint contract.
+>
+> **Test infra note:** `tests/setup/globalSetup.js` starts a single-member MongoDB **replica set**
+> (not a standalone instance) as of this phase — required for `createUpdate`'s multi-document
+> transaction to work at all in tests.
 
 ## Layering
 

@@ -39,6 +39,11 @@ app.use('/api/v1/auth', require('./routes/auth.routes'));
 app.use('/api/v1/users', require('./routes/users.routes'));
 app.use('/api/v1/lookup-lists', require('./routes/lookupList.routes'));
 app.use('/api/v1/tasks', require('./routes/tasks.routes'));
+// Separate mount (not nested inside tasks.routes.js, which Phase 6 leaves untouched) — mergeParams
+// on the sub-router gives it req.params.id from this path segment.
+app.use('/api/v1/tasks/:id/updates', require('./routes/taskUpdate.routes'));
+app.use('/api/v1/uploads', require('./routes/uploads.routes'));
+app.use('/api/v1/dashboard', require('./routes/dashboard.routes'));
 
 // Remaining resource routers are mounted here in later phases, under the same /api/v1 prefix
 // (docs/05-apis.md §1), e.g.:

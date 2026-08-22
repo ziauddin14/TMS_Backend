@@ -263,6 +263,63 @@ describe('taskService.listTasks (scoping and filters)', () => {
     expect(byEntryRange.items).toHaveLength(2); // both created "now"
   });
 
+  it('filters by performanceRating, including the "-" (not applicable) bucket (Phase 7 gap-fill: previously untested)', async () => {
+    const admin = await makeAdmin();
+    const assignee = await makeUser();
+    const lookup = await makeLookup();
+
+    const excellentTask = await taskService.createTask(
+      { id: admin.id },
+      { title: 'Excellent Task', assignees: [assignee._id], responsibility: lookup.value, deadline: inDays(5) }
+    );
+    await Task.findByIdAndUpdate(excellentTask.id, { completionPercent: 95 });
+    await taskService.closeTask({ id: admin.id }, excellentTask.id); // -> performanceRating 'excellent'
+
+    await taskService.createTask(
+      { id: admin.id },
+      { title: 'Still Ongoing', assignees: [assignee._id], responsibility: lookup.value, deadline: inDays(5) }
+    ); // performanceRating stays '-'
+
+    const excellentResult = await taskService.listTasks(
+      { id: admin.id, role: 'admin' },
+      { performanceRating: 'excellent' },
+      { page: 1, limit: 20 }
+    );
+    expect(excellentResult.items).toHaveLength(1);
+    expect(excellentResult.items[0].id).toBe(excellentTask.id);
+
+    const notApplicableResult = await taskService.listTasks(
+      { id: admin.id, role: 'admin' },
+      { performanceRating: '-' },
+      { page: 1, limit: 20 }
+    );
+    expect(notApplicableResult.items).toHaveLength(1);
+    expect(notApplicableResult.items[0].title).toBe('Still Ongoing');
+  });
+
+  it('sortOrder:desc reverses the sort direction (Phase 7 gap-fill: only asc was previously tested)', async () => {
+    const admin = await makeAdmin();
+    const assignee = await makeUser();
+    const lookup = await makeLookup();
+    await taskService.createTask(
+      { id: admin.id },
+      { title: 'Early', assignees: [assignee._id], responsibility: lookup.value, deadline: inDays(1) }
+    );
+    await taskService.createTask(
+      { id: admin.id },
+      { title: 'Late', assignees: [assignee._id], responsibility: lookup.value, deadline: inDays(10) }
+    );
+
+    const result = await taskService.listTasks(
+      { id: admin.id, role: 'admin' },
+      {},
+      { page: 1, limit: 1, sortBy: 'deadline', sortOrder: 'desc' }
+    );
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].title).toBe('Late'); // furthest deadline first, descending
+  });
+
   it('combines multiple filters at once', async () => {
     const admin = await makeAdmin();
     const assignee = await makeUser();

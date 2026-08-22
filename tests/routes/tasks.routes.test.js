@@ -262,6 +262,29 @@ describe('PATCH /api/v1/tasks/:id', () => {
     expect(res.body.code).toBe('TASK_NOT_FOUND');
   });
 
+  it('rejects any edit on an already-closed task with VALIDATION_ERROR, "Yeh kaam close ho chuka hai"', async () => {
+    const admin = await makeAdmin();
+    const assignee = await makeUser();
+    const lookup = await makeLookup();
+    const createRes = await request(app)
+      .post('/api/v1/tasks')
+      .set('Authorization', `Bearer ${tokenFor(admin)}`)
+      .send({ title: 'X', assignees: [assignee.id], responsibility: lookup.value, deadline: inDays(1) });
+    const taskId = createRes.body.data.id;
+    await request(app)
+      .patch(`/api/v1/tasks/${taskId}/close`)
+      .set('Authorization', `Bearer ${tokenFor(admin)}`);
+
+    const res = await request(app)
+      .patch(`/api/v1/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${tokenFor(admin)}`)
+      .send({ title: 'Renamed after close' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('VALIDATION_ERROR');
+    expect(res.body.message).toBe('Yeh kaam close ho chuka hai');
+  });
+
   it('there is no DELETE /tasks/:id route', async () => {
     const admin = await makeAdmin();
     const assignee = await makeUser();

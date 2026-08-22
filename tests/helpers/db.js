@@ -5,6 +5,16 @@ const mongoose = require('mongoose');
 
 async function connect() {
   await mongoose.connect(process.env.MONGO_TEST_URI);
+  // Mongoose's autoIndex background-builds each model's indexes fire-and-forget at connection
+  // time. Against the standalone MongoMemoryServer used through Phase 5 this reliably finished
+  // before a test file's first insert; against the replica set introduced in Phase 6 (required
+  // for transactions — see globalSetup.js) the extra connection/replication overhead made that
+  // race newly visible: two pre-existing LookupList uniqueness tests intermittently failed
+  // because the unique (listType, value) index hadn't finished building yet. Model.init()
+  // resolves once a given model's own index build completes, so awaiting it for every
+  // registered model closes this race deterministically for all six models, not just the one
+  // that happened to expose it.
+  await Promise.all(mongoose.modelNames().map((name) => mongoose.model(name).init()));
 }
 
 async function closeDatabase() {
