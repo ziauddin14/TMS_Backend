@@ -2,14 +2,22 @@
 
 Node.js + Express REST API for the Khud Kifalat Shobajat (Dawat-e-Islami) Task Management System.
 
-> Status: **Phase 7 — Dashboard + KPI.** Phases 1–6 plus `GET /dashboard/summary` (byStatus/
-> byPerformance/total, aggregation-pipeline-based, RBAC-scoped identically to `GET /tasks`) are
-> implemented. No Reports, Notifications, or Frontend yet. See `../docs/` — `../docs/05-apis.md`
-> §8 for the endpoint contract.
+> Status: **Phase 9 — Notifications / Reminders. Backend business logic is now complete
+> (Phases 1–9).** The daily reminder cron (`reminder.job.js`, `Asia/Karachi`, `0 7 * * *`),
+> `email.service.js` (nodemailer, mocked in tests), and `POST /admin/trigger-reminders` are
+> implemented. Only Phase 10 (Frontend) remains. See `../docs/` — `../docs/05-apis.md` §10 and
+> `../docs/06-backend.md` §7–8 for the reminder contract/algorithm.
 >
-> **Test infra note:** `tests/setup/globalSetup.js` starts a single-member MongoDB **replica set**
-> (not a standalone instance) as of this phase — required for `createUpdate`'s multi-document
-> transaction to work at all in tests.
+> **Test infra notes:**
+> - `tests/setup/globalSetup.js` starts a single-member MongoDB **replica set** (required for
+>   `taskUpdate.service.js`'s transaction).
+> - `npm test` runs Jest via `node --experimental-vm-modules` — required because `puppeteer`
+>   ships ESM-only and is loaded via a dynamic `import()` (see `report.service.js`); Jest's
+>   default runner otherwise refuses to execute a real dynamic import of an ESM package.
+> - `.env.test` sets `PUPPETEER_EXECUTABLE_PATH` to a local Chrome install rather than
+>   Puppeteer's own bundled Chromium, purely because this sandbox's network makes that download
+>   impractically slow — **not** part of the documented architecture; absent from
+>   `.env.example`, since Render uses Puppeteer's normal bundled-Chromium download in production.
 
 ## Layering
 

@@ -44,10 +44,8 @@ app.use('/api/v1/tasks', require('./routes/tasks.routes'));
 app.use('/api/v1/tasks/:id/updates', require('./routes/taskUpdate.routes'));
 app.use('/api/v1/uploads', require('./routes/uploads.routes'));
 app.use('/api/v1/dashboard', require('./routes/dashboard.routes'));
-
-// Remaining resource routers are mounted here in later phases, under the same /api/v1 prefix
-// (docs/05-apis.md §1), e.g.:
-//   app.use('/api/v1/reports', require('./routes/reports.routes'));
+app.use('/api/v1/reports', require('./routes/reports.routes'));
+app.use('/api/v1/admin', require('./routes/admin.routes'));
 
 app.use(notFoundHandler);
 app.use(errorHandler); // must be last

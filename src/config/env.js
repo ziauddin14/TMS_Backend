@@ -34,13 +34,11 @@ const envSchema = z.object({
   GOOGLE_DRIVE_FOLDER_ID: z.string().min(1, 'GOOGLE_DRIVE_FOLDER_ID is required'),
 
   // ---- Email / SMTP ----
-  // Optional for now: not consumed until the Notifications module is implemented.
-  // Kept as plain strings here (not number-coerced) since nothing parses them yet — that
-  // conversion belongs to whichever phase actually consumes SMTP_PORT.
-  SMTP_HOST: z.string().optional(),
-  SMTP_PORT: z.string().optional(),
-  SMTP_USER: z.string().optional(),
-  SMTP_PASS: z.string().optional(),
+  // Required as of the Notifications module (Phase 9) — consumed by email.service.js.
+  SMTP_HOST: z.string().min(1, 'SMTP_HOST is required'),
+  SMTP_PORT: z.coerce.number().int().positive(),
+  SMTP_USER: z.string().min(1, 'SMTP_USER is required'),
+  SMTP_PASS: z.string().min(1, 'SMTP_PASS is required'),
 
   // ---- App behaviour ----
   FRONTEND_URL: z.string().url('FRONTEND_URL must be a valid URL'),

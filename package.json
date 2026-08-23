@@ -10,8 +10,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "jest --runInBand",
-    "test:watch": "jest --watch --runInBand",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch --runInBand",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
@@ -19,6 +19,7 @@
     "compression": "^1.7.4",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "express-rate-limit": "^8.6.2",
     "google-auth-library": "^11.0.2",
@@ -28,6 +29,9 @@
     "mongoose": "^8.5.0",
     "morgan": "^1.10.0",
     "multer": "^2.2.0",
+    "node-cron": "^4.6.0",
+    "nodemailer": "^9.0.5",
+    "puppeteer": "^25.8.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
