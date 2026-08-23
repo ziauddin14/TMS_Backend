@@ -4,10 +4,14 @@ const AppError = require('../utils/AppError');
 
 const MONGO_DUPLICATE_KEY_ERROR_CODE = 11000;
 
-// Not in the documented Error Code Catalog with its own literal text — this implementation's own
-// message, since no screen in the docs quotes exact copy for this case (flagged in the Phase 4
-// report, section H).
-const DUPLICATE_LOOKUP_MESSAGE = 'This value already exists for this list type.';
+// docs/05-apis.md §4's exact quoted copy for this case: "Duplicate (listType, value) -> 409
+// DUPLICATE_LOOKUP_VALUE, message: 'Yeh value pehle se is list mein maujood hai.'" — Phase 4 had
+// missed this (its own comment cited only the Error Code Catalog, which doesn't give literal text
+// for every code, without cross-referencing this section too). Corrected here in Phase 10.5 since
+// this is the first phase to actually surface the message in a real user-facing UI element (the
+// Lookup Lists admin panel's inline duplicate-value error) — a non-technical Urdu-speaking Admin
+// would otherwise see an out-of-place English sentence.
+const DUPLICATE_LOOKUP_MESSAGE = 'Yeh value pehle se is list mein maujood hai.';
 
 // docs/06-backend.md §3: listActive(listType) — only active values, dropdown display order.
 async function listActive(listType) {
