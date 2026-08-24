@@ -8,6 +8,7 @@ require('../config/env');
 // (Node's standard, documented CJS-consuming-ESM interop) inside withBrowserPage below, rather
 // than a top-level require() here, which would throw a SyntaxError on 'export * from ...'.
 const ExcelJS = require('exceljs');
+const logger = require('../utils/logger');
 const TaskUpdate = require('../models/TaskUpdate');
 const User = require('../models/User');
 const taskService = require('./task.service');
@@ -266,12 +267,35 @@ async function buildUserSummaryData(_requestingUser) {
 // overhead per request is a good trade for simplicity and zero risk of a leaked zombie browser.
 async function withBrowserPage(fn) {
   const { default: puppeteer } = await import('puppeteer');
-  const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+  const launchOptions = {
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+  };
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+  let browser;
+  try {
+    browser = await puppeteer.launch(launchOptions);
+  } catch (launchError) {
+    logger.error('Puppeteer browser launch failed:', launchError);
+    console.error('Puppeteer browser launch failed stack:', launchError.stack || launchError);
+    throw launchError;
+  }
+
   try {
     const page = await browser.newPage();
     return await fn(page);
+  } catch (pageError) {
+    logger.error('Puppeteer report generation failed on page:', pageError);
+    console.error('Puppeteer report generation failed stack:', pageError.stack || pageError);
+    throw pageError;
   } finally {
-    await browser.close();
+    if (browser) {
+      await browser.close().catch((closeError) => {
+        logger.error('Failed to close Puppeteer browser:', closeError);
+        console.error('Failed to close Puppeteer browser stack:', closeError.stack || closeError);
+      });
+    }
   }
 }
 
