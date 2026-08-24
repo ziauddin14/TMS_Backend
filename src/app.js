@@ -12,7 +12,7 @@ const app = express();
 
 const allowedOrigins = [env.FRONTEND_URL];
 if (env.NODE_ENV !== 'production') {
-  allowedOrigins.push('http://localhost:5173');
+  allowedOrigins.push('https://tms-donationbox.vercel.app');
 }
 
 app.use(helmet());
