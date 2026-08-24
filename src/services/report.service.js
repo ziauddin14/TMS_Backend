@@ -1,7 +1,3 @@
-// Required for its side effect (dotenv.config(), same as every other service that touches env-
-// driven behavior) — guarantees .env/.env.test is loaded before Puppeteer's own internal config
-// resolution reads process.env.PUPPETEER_EXECUTABLE_PATH (see .env.test), regardless of whether
-// some other file happened to load config/env.js first. Not relying on incidental load order.
 require('../config/env');
 // puppeteer ships as an ESM-only package (no CommonJS entry point) as of the installed version —
 // the rest of this backend is CommonJS throughout, so it's loaded via a lazy dynamic import()
@@ -270,9 +266,6 @@ async function withBrowserPage(fn) {
   const launchOptions = {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   };
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-  }
   let browser;
   try {
     browser = await puppeteer.launch(launchOptions);
