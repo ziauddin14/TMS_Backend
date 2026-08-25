@@ -18,6 +18,12 @@ Node.js + Express REST API for the Khud Kifalat Shobajat (Dawat-e-Islami) Task M
 >   Puppeteer's own bundled Chromium, purely because this sandbox's network makes that download
 >   impractically slow — **not** part of the documented architecture; absent from
 >   `.env.example`, since Render uses Puppeteer's normal bundled-Chromium download in production.
+>   **This variable is read by puppeteer itself** (its own `getConfiguration()`), not by any code
+>   in this repo — `report.service.js` never reads or sets `executablePath` at all. That also means
+>   it must never be set as an actual environment variable anywhere production runs (e.g. Render's
+>   dashboard) — puppeteer would use it there too, unconditionally, and Render's Linux servers
+>   don't have a Chrome install at a Windows path. If a production export ever fails with "Browser
+>   was not found at the configured executablePath", check Render's env vars for this key first.
 
 ## Layering
 

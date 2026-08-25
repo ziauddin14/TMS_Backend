@@ -263,12 +263,26 @@ async function buildUserSummaryData(_requestingUser) {
 // overhead per request is a good trade for simplicity and zero risk of a leaked zombie browser.
 async function withBrowserPage(fn) {
   const { default: puppeteer } = await import('puppeteer');
+  // Full `puppeteer` (not `puppeteer-core`) ships its own bundled Chromium and resolves it
+  // automatically — this code never sets `executablePath` in launchOptions (removed the
+  // `if (process.env.PUPPETEER_EXECUTABLE_PATH)` override that used to be here).
+  //
+  // IMPORTANT — this code-level fix is NOT sufficient on its own if PUPPETEER_EXECUTABLE_PATH is
+  // set as an actual environment variable (Render dashboard, shell, etc.): puppeteer's own
+  // getConfiguration() (node_modules/puppeteer/lib/puppeteer/getConfiguration.js) reads that env
+  // var directly from process.env and threads it through BrowserLauncher.resolveExecutablePath()
+  // as the browser's default executablePath — entirely independent of whatever this file's
+  // launchOptions object contains. Confirmed locally: even with no code-level override, this
+  // process still launches the Chrome at backend/.env.test's PUPPETEER_EXECUTABLE_PATH, because
+  // puppeteer reads it internally. If Render's production environment has this variable set
+  // (to the Windows-only path from .env.test, or anything else), it MUST be removed from Render's
+  // own environment-variable dashboard — no code change here can override puppeteer's own env-var
+  // resolution. The debug line below prints the actual resolved path on every export so Render's
+  // logs give direct proof of what's happening at runtime; remove it once confirmed fixed there.
+  console.log('[DEBUG] Puppeteer executablePath resolved to:', await puppeteer.executablePath());
   const launchOptions = {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   };
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-  }
   let browser;
   try {
     browser = await puppeteer.launch(launchOptions);
