@@ -281,9 +281,10 @@ async function withBrowserPage(fn) {
   // logs give direct proof of what's happening at runtime; remove it once confirmed fixed there.
   console.log('[DEBUG] Puppeteer executablePath resolved to:', await puppeteer.executablePath());
   const fs = require('fs');
-  const cacheDir = '/opt/render/.cache/puppeteer';
+  const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
   try {
-    console.log('[DEBUG] Cache dir exists?', fs.existsSync(cacheDir));
+    console.log('[DEBUG] PUPPETEER_CACHE_DIR env:', process.env.PUPPETEER_CACHE_DIR);
+    console.log('[DEBUG] Cache dir exists?', cacheDir, fs.existsSync(cacheDir));
     if (fs.existsSync(cacheDir)) {
       console.log('[DEBUG] Cache dir full contents:', JSON.stringify(fs.readdirSync(cacheDir, { recursive: true })));
     }
