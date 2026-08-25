@@ -280,6 +280,16 @@ async function withBrowserPage(fn) {
   // resolution. The debug line below prints the actual resolved path on every export so Render's
   // logs give direct proof of what's happening at runtime; remove it once confirmed fixed there.
   console.log('[DEBUG] Puppeteer executablePath resolved to:', await puppeteer.executablePath());
+  const fs = require('fs');
+  const cacheDir = '/opt/render/.cache/puppeteer';
+  try {
+    console.log('[DEBUG] Cache dir exists?', fs.existsSync(cacheDir));
+    if (fs.existsSync(cacheDir)) {
+      console.log('[DEBUG] Cache dir full contents:', JSON.stringify(fs.readdirSync(cacheDir, { recursive: true })));
+    }
+  } catch (e) {
+    console.log('[DEBUG] Error reading cache dir:', e.message);
+  }
   const launchOptions = {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   };
