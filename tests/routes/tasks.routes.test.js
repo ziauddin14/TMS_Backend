@@ -90,15 +90,15 @@ describe('POST /api/v1/tasks', () => {
     expect(res.body.details[0].field).toBe('assignees');
   });
 
-  it('rejects an unrecognized responsibility value', async () => {
+  it('accepts a responsibility value with no matching LookupList entry (free text, sourced from Users)', async () => {
     const admin = await makeAdmin();
     const assignee = await makeUser();
     const res = await request(app)
       .post('/api/v1/tasks')
       .set('Authorization', `Bearer ${tokenFor(admin)}`)
       .send({ title: 'X', assignees: [assignee.id], responsibility: 'Nonexistent', deadline: inDays(1) });
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe('VALIDATION_ERROR');
+    expect(res.status).toBe(201);
+    expect(res.body.data.responsibility).toBe('Nonexistent');
   });
 });
 

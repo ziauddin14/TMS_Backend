@@ -1,7 +1,6 @@
 const mongoose = require('mongoose');
 const Task = require('../models/Task');
 const User = require('../models/User');
-const LookupList = require('../models/LookupList');
 const Counter = require('../models/Counter');
 const AppError = require('../utils/AppError');
 
@@ -75,26 +74,6 @@ async function validateAssignees(assigneeIds) {
   if (invalidIds.length > 0) {
     throw new AppError('One or more assignees are invalid or inactive.', 400, 'VALIDATION_ERROR', [
       { field: 'assignees', message: `Invalid or inactive user id(s): ${invalidIds.join(', ')}` },
-    ]);
-  }
-}
-
-// Service-layer check (not a schema foreign key, per docs/04-db-models.md §5's "kept as plain
-// text so historical tasks are unaffected if a value is later retired") that responsibility
-// matches a currently-active lookupLists entry, so a typo can never enter the system at
-// creation/edit time — explicitly required by the Phase 5 instructions.
-async function validateResponsibility(responsibility) {
-  const entry = await LookupList.findOne({
-    listType: 'responsibility',
-    value: responsibility,
-    isActive: true,
-  });
-  if (!entry) {
-    throw new AppError('Unrecognized responsibility value.', 400, 'VALIDATION_ERROR', [
-      {
-        field: 'responsibility',
-        message: `"${responsibility}" is not a recognized active responsibility value.`,
-      },
     ]);
   }
 }
@@ -185,7 +164,6 @@ async function getTaskById(requestingUser, taskId) {
 // docs/06-backend.md §4.2
 async function createTask(adminUser, { title, assignees, responsibility, deadline }) {
   await validateAssignees(assignees);
-  await validateResponsibility(responsibility);
 
   const codeNumber = await Counter.getNextCodeNumber();
 
@@ -228,7 +206,6 @@ async function updateTaskFields(taskId, patch) {
     task.assignees = patch.assignees;
   }
   if (patch.responsibility !== undefined) {
-    await validateResponsibility(patch.responsibility);
     task.responsibility = patch.responsibility;
   }
   if (patch.title !== undefined) {

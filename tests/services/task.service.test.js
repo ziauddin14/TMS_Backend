@@ -111,29 +111,19 @@ describe('taskService.createTask', () => {
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 
-  it('rejects an unrecognized responsibility value', async () => {
+  // Responsibility is plain free text sourced from Users, not a LookupList-gated value (client's
+  // Part C architecture decision) — a value with no matching LookupList entry, or none at all,
+  // must be accepted rather than rejected.
+  it('accepts a responsibility value with no matching (or no) LookupList entry', async () => {
     const admin = await makeAdmin();
     const assignee = await makeUser();
 
-    await expect(
-      taskService.createTask(
-        { id: admin.id },
-        { title: 'X', assignees: [assignee._id], responsibility: 'Not A Real Value', deadline: inDays(1) }
-      )
-    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
-  });
+    const task = await taskService.createTask(
+      { id: admin.id },
+      { title: 'X', assignees: [assignee._id], responsibility: 'Not In Any Lookup List', deadline: inDays(1) }
+    );
 
-  it('rejects a responsibility value that exists but has been retired (isActive:false)', async () => {
-    const admin = await makeAdmin();
-    const assignee = await makeUser();
-    const retired = await makeLookup('Retired Role', { isActive: false });
-
-    await expect(
-      taskService.createTask(
-        { id: admin.id },
-        { title: 'X', assignees: [assignee._id], responsibility: retired.value, deadline: inDays(1) }
-      )
-    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(task.responsibility).toBe('Not In Any Lookup List');
   });
 
   it('generates sequential, unique code numbers for back-to-back creates (Counter regression check)', async () => {
@@ -503,7 +493,7 @@ describe('taskService.updateTaskFields', () => {
     });
   });
 
-  it('rejects an unrecognized responsibility the same way creation does', async () => {
+  it('accepts a responsibility value on update with no matching (or no) LookupList entry', async () => {
     const admin = await makeAdmin();
     const assignee = await makeUser();
     const lookup = await makeLookup();
@@ -512,9 +502,8 @@ describe('taskService.updateTaskFields', () => {
       { title: 'X', assignees: [assignee._id], responsibility: lookup.value, deadline: inDays(1) }
     );
 
-    await expect(taskService.updateTaskFields(task.id, { responsibility: 'Bogus Value' })).rejects.toMatchObject({
-      code: 'VALIDATION_ERROR',
-    });
+    const updated = await taskService.updateTaskFields(task.id, { responsibility: 'Not In Any Lookup List' });
+    expect(updated.responsibility).toBe('Not In Any Lookup List');
   });
 
   it('returns TASK_NOT_FOUND for a nonexistent id', async () => {
