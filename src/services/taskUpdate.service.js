@@ -29,7 +29,7 @@ async function listUpdates(requestingUser, taskId, pagination) {
   const skip = (page - 1) * limit;
 
   const [items, total] = await Promise.all([
-    TaskUpdate.find({ taskId }).sort({ createdAt: -1 }).skip(skip).limit(limit).populate('updatedBy', 'name role'),
+    TaskUpdate.find({ taskId }).sort({ createdAt: -1 }).skip(skip).limit(limit).populate('updatedBy', 'name role responsibility'),
     TaskUpdate.countDocuments({ taskId }),
   ]);
 
@@ -86,7 +86,7 @@ async function createUpdate(requestingUser, taskId, { description, completionPer
 
   // Re-fetch outside the (now-committed) transaction, populated, for the response shape.
   const [populatedUpdate, populatedTask] = await Promise.all([
-    TaskUpdate.findById(createdUpdateId).populate('updatedBy', 'name role'),
+    TaskUpdate.findById(createdUpdateId).populate('updatedBy', 'name role responsibility'),
     Task.findById(taskId).populate('assignees', 'name responsibility').populate('createdBy', 'name'),
   ]);
 

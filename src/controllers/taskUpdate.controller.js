@@ -7,7 +7,12 @@ function serializeUpdate(update) {
     id: update.id,
     taskId: update.taskId,
     updatedBy: update.updatedBy
-      ? { id: update.updatedBy.id, name: update.updatedBy.name, role: update.updatedBy.role }
+      ? {
+          id: update.updatedBy.id,
+          name: update.updatedBy.name,
+          role: update.updatedBy.role,
+          responsibility: update.updatedBy.responsibility,
+        }
       : null,
     description: update.description,
     completionPercent: update.completionPercent,
