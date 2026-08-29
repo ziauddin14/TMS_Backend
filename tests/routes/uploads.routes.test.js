@@ -3,7 +3,9 @@ const mockPermissionsCreate = jest.fn();
 
 jest.mock('googleapis', () => ({
   google: {
-    auth: { JWT: jest.fn().mockImplementation(() => ({})) },
+    auth: {
+      OAuth2: jest.fn().mockImplementation(() => ({ setCredentials: jest.fn() })),
+    },
     drive: jest.fn().mockImplementation(() => ({
       files: { create: mockFilesCreate },
       permissions: { create: mockPermissionsCreate },

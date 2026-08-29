@@ -27,10 +27,16 @@ const envSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().min(1, 'GOOGLE_CLIENT_ID is required'),
   GOOGLE_ALLOWED_HD: z.string().optional(),
 
-  // ---- Google Drive (service account) ----
+  // ---- Google Drive (OAuth2, dedicated account) ----
   // Required as of the Attachments module (Phase 6) — consumed by googleDrive.service.js.
-  GOOGLE_DRIVE_CLIENT_EMAIL: z.string().min(1, 'GOOGLE_DRIVE_CLIENT_EMAIL is required'),
-  GOOGLE_DRIVE_PRIVATE_KEY: z.string().min(1, 'GOOGLE_DRIVE_PRIVATE_KEY is required'),
+  // A service-account JWT client has no Drive storage quota of its own, so uploads into a folder
+  // it doesn't own fail with 403 storageQuotaExceeded/"Service Accounts do not have storage
+  // quota" — confirmed against the real API. Fixed by authenticating as a real, dedicated Google
+  // account (which does have its own storage) via a one-time-obtained OAuth2 refresh token,
+  // instead of a service-account JWT.
+  GOOGLE_DRIVE_CLIENT_ID: z.string().min(1, 'GOOGLE_DRIVE_CLIENT_ID is required'),
+  GOOGLE_DRIVE_CLIENT_SECRET: z.string().min(1, 'GOOGLE_DRIVE_CLIENT_SECRET is required'),
+  GOOGLE_DRIVE_REFRESH_TOKEN: z.string().min(1, 'GOOGLE_DRIVE_REFRESH_TOKEN is required'),
   GOOGLE_DRIVE_FOLDER_ID: z.string().min(1, 'GOOGLE_DRIVE_FOLDER_ID is required'),
 
   // ---- Email / SMTP ----

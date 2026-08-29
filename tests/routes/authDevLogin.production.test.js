@@ -21,6 +21,10 @@ describe('POST /auth/dev-login route registration under NODE_ENV=production', ()
       JWT_EXPIRES_IN: '7d',
       GOOGLE_CLIENT_ID: 'prod-test-client-id.apps.googleusercontent.com',
       GOOGLE_ALLOWED_HD: '',
+      GOOGLE_DRIVE_CLIENT_ID: 'prod-test-drive-client-id.apps.googleusercontent.com',
+      GOOGLE_DRIVE_CLIENT_SECRET: 'prod-test-not-a-real-client-secret',
+      GOOGLE_DRIVE_REFRESH_TOKEN: 'prod-test-not-a-real-refresh-token',
+      GOOGLE_DRIVE_FOLDER_ID: 'prod-test-drive-folder-id',
       FRONTEND_URL: 'https://example.com',
       REMINDER_DAYS_BEFORE: '2',
     });

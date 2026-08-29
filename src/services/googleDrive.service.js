@@ -6,14 +6,19 @@ function sanitizeFileName(name) {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
+// A service-account (JWT) client has no Drive storage quota of its own — uploading into a folder
+// it doesn't own fails with 403 "Service Accounts do not have storage quota." Authenticating as a
+// real, dedicated Google account instead (via a one-time-obtained OAuth2 refresh token) gives the
+// upload somewhere to actually land, since that account's own Drive storage backs it.
 function getDriveClient() {
-  const auth = new google.auth.JWT({
-    email: env.GOOGLE_DRIVE_CLIENT_EMAIL,
-    // Service-account PEM keys are stored as a single-line env var with literal \n sequences —
-    // convert back to real newlines.
-    key: env.GOOGLE_DRIVE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-    scopes: ['https://www.googleapis.com/auth/drive'],
-  });
+  const auth = new google.auth.OAuth2(env.GOOGLE_DRIVE_CLIENT_ID, env.GOOGLE_DRIVE_CLIENT_SECRET);
+  auth.setCredentials({ refresh_token: env.GOOGLE_DRIVE_REFRESH_TOKEN });
+  // Diagnostic — confirms in Render's logs exactly which auth mode is actually active at runtime
+  // (OAuth2 vs a JWT/service-account client, if this ever regresses again). Logged on every
+  // upload (getDriveClient() builds a fresh client per call) rather than gated to a true
+  // once-per-process startup log, since there's no separate app-boot hook this service
+  // participates in — the first real upload attempt is effectively the first opportunity.
+  console.log('[DEBUG] Google Drive auth client type:', auth.constructor.name);
   return google.drive({ version: 'v3', auth });
 }
 

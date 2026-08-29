@@ -1,9 +1,13 @@
 const mockFilesCreate = jest.fn();
 const mockPermissionsCreate = jest.fn();
 
+const mockSetCredentials = jest.fn();
+
 jest.mock('googleapis', () => ({
   google: {
-    auth: { JWT: jest.fn().mockImplementation(() => ({})) },
+    auth: {
+      OAuth2: jest.fn().mockImplementation(() => ({ setCredentials: mockSetCredentials })),
+    },
     drive: jest.fn().mockImplementation(() => ({
       files: { create: mockFilesCreate },
       permissions: { create: mockPermissionsCreate },
@@ -11,11 +15,29 @@ jest.mock('googleapis', () => ({
   },
 }));
 
+const { google } = require('googleapis');
 const { uploadFile, shareFile, sanitizeFileName } = require('../../src/services/googleDrive.service');
 
 beforeEach(() => {
   mockFilesCreate.mockReset();
   mockPermissionsCreate.mockReset();
+  mockSetCredentials.mockReset();
+  google.auth.OAuth2.mockClear();
+});
+
+// Regression coverage for the service-account-JWT-vs-OAuth2 bug: uploadFile must authenticate as
+// a real, dedicated Google account (OAuth2 + a refresh token, which has its own Drive storage
+// quota), never a service-account JWT client (which has none — the exact 403 this replaced).
+describe('getDriveClient (OAuth2 auth, not a service-account JWT)', () => {
+  it('constructs google.auth.OAuth2 with the configured client id/secret and sets the refresh token', async () => {
+    mockFilesCreate.mockResolvedValue({ data: { id: 'drive-id-oauth', webViewLink: 'https://drive.google.com/file/oauth' } });
+    mockPermissionsCreate.mockResolvedValue({});
+
+    await uploadFile(Buffer.from('x'), 'x.pdf', 'application/pdf', 'user-1');
+
+    expect(google.auth.OAuth2).toHaveBeenCalledWith('test-drive-client-id.apps.googleusercontent.com', 'test-not-a-real-client-secret');
+    expect(mockSetCredentials).toHaveBeenCalledWith({ refresh_token: 'test-not-a-real-refresh-token' });
+  });
 });
 
 describe('sanitizeFileName', () => {
