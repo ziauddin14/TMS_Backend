@@ -11,85 +11,15 @@ function sanitizeFileName(name) {
 // real, dedicated Google account instead (via a one-time-obtained OAuth2 refresh token) gives the
 // upload somewhere to actually land, since that account's own Drive storage backs it.
 function getDriveClient() {
-  const clientId = env.GOOGLE_DRIVE_CLIENT_ID;
-  const clientSecret = env.GOOGLE_DRIVE_CLIENT_SECRET;
-  const refreshToken = env.GOOGLE_DRIVE_REFRESH_TOKEN;
-
-  console.log('[DEBUG] Google Drive OAuth runtime check:', {
-    clientIdPresent: Boolean(clientId),
-    clientIdLength: clientId?.length,
-    clientIdStart: clientId?.slice(0, 12),
-    clientIdEnd: clientId?.slice(-12),
-
-    clientSecretPresent: Boolean(clientSecret),
-    clientSecretLength: clientSecret?.length,
-    clientSecretStart: clientSecret?.slice(0, 10),
-    clientSecretEnd: clientSecret?.slice(-6),
-
-    refreshTokenPresent: Boolean(refreshToken),
-    refreshTokenLength: refreshToken?.length,
-    refreshTokenStart: refreshToken?.slice(0, 10),
-    refreshTokenEnd: refreshToken?.slice(-6),
-
-    folderIdPresent: Boolean(env.GOOGLE_DRIVE_FOLDER_ID),
-    folderIdLength: env.GOOGLE_DRIVE_FOLDER_ID?.length,
-  });
-
-  const auth = new google.auth.OAuth2(
-    clientId,
-    clientSecret
-  );
-
-  auth.setCredentials({
-    refresh_token: refreshToken
-  });
-
-  console.log(
-    '[DEBUG] Google Drive auth client type:',
-    auth.constructor.name
-  );
-
-  return google.drive({
-    version: 'v3',
-    auth
-  });
-}
-
-async function testGoogleDriveAuth() {
-  const auth = new google.auth.OAuth2(
-    env.GOOGLE_DRIVE_CLIENT_ID,
-    env.GOOGLE_DRIVE_CLIENT_SECRET
-  );
-
-  auth.setCredentials({
-    refresh_token: env.GOOGLE_DRIVE_REFRESH_TOKEN
-  });
-
-  try {
-    const accessTokenResponse = await auth.getAccessToken();
-    console.log(
-      '[DEBUG] Google OAuth token acquisition successful:',
-      Boolean(accessTokenResponse?.token)
-    );
-    return { success: true };
-  } catch (error) {
-    console.error(
-      '[DEBUG] Google OAuth token acquisition failed:',
-      {
-        code: error?.code,
-        status: error?.response?.status,
-        error: error?.response?.data?.error,
-        errorDescription: error?.response?.data?.error_description
-      }
-    );
-    return {
-      success: false,
-      code: error?.code,
-      status: error?.response?.status,
-      error: error?.response?.data?.error,
-      errorDescription: error?.response?.data?.error_description
-    };
-  }
+  const auth = new google.auth.OAuth2(env.GOOGLE_DRIVE_CLIENT_ID, env.GOOGLE_DRIVE_CLIENT_SECRET);
+  auth.setCredentials({ refresh_token: env.GOOGLE_DRIVE_REFRESH_TOKEN });
+  // Diagnostic — confirms in Render's logs exactly which auth mode is actually active at runtime
+  // (OAuth2 vs a JWT/service-account client, if this ever regresses again). Logged on every
+  // upload (getDriveClient() builds a fresh client per call) rather than gated to a true
+  // once-per-process startup log, since there's no separate app-boot hook this service
+  // participates in — the first real upload attempt is effectively the first opportunity.
+  console.log('[DEBUG] Google Drive auth client type:', auth.constructor.name);
+  return google.drive({ version: 'v3', auth });
 }
 
 /**
@@ -143,4 +73,4 @@ async function uploadFile(buffer, originalName, mimeType, _uploaderUserId) {
   };
 }
 
-module.exports = { uploadFile, shareFile, sanitizeFileName, testGoogleDriveAuth };
+module.exports = { uploadFile, shareFile, sanitizeFileName };
