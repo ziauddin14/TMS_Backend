@@ -9,4 +9,7 @@ const router = express.Router();
 // docs/05-apis.md §7 — any authenticated user.
 router.post('/', authMiddleware, uploadSingleFile, validateUploadedFile, uploadsController.uploadFile);
 
+// Diagnostic endpoint for Google OAuth token acquisition
+router.get('/diagnostic/google-auth', authMiddleware, uploadsController.testGoogleAuth);
+
 module.exports = router;
