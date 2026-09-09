@@ -4,29 +4,18 @@ require('../config/env');
 // (Node's standard, documented CJS-consuming-ESM interop) inside withBrowserPage below, rather
 // than a top-level require() here, which would throw a SyntaxError on 'export * from ...'.
 const ExcelJS = require('exceljs');
+const { Document, Packer, Paragraph, Table, TableRow, TableCell, HeadingLevel, ExternalHyperlink, TextRun, WidthType } = require('docx');
 const logger = require('../utils/logger');
 const TaskUpdate = require('../models/TaskUpdate');
 const User = require('../models/User');
 const taskService = require('./task.service');
 const dashboardService = require('./dashboard.service');
+const { formatDateShort, MONTH_NAMES } = require('../utils/formatDate');
 
 // "Unpaginated, all matching rows" (docs/06-backend.md §9) implemented by calling the existing,
 // unmodified listTasks with a limit far beyond this project's confirmed scale (docs/01-architecture.md
 // §9: ~20-25 users, small task volume) — not a new "no pagination" mode added to listTasks itself.
 const UNPAGINATED_LIMIT = 100000;
-
-const TASK_COLUMNS = ['codeNumber', 'title', 'assignees', 'responsibility', 'deadline', 'status', 'timeStatus', 'completionPercent', 'performanceRating'];
-const TASK_COLUMN_LABELS = {
-  codeNumber: 'Code Number',
-  title: 'Task',
-  assignees: 'Zimmedar(an)',
-  responsibility: 'Zimmedari',
-  deadline: 'Deadline',
-  status: 'Status',
-  timeStatus: 'Time Status',
-  completionPercent: 'Completion %',
-  performanceRating: 'Performance',
-};
 
 const USER_SUMMARY_COLUMNS = ['name', 'responsibility', 'ongoing', 'pending', 'complete', 'closed', 'excellent', 'good', 'fair', 'weak', 'notApplicable', 'total'];
 const USER_SUMMARY_COLUMN_LABELS = {
@@ -44,6 +33,12 @@ const USER_SUMMARY_COLUMN_LABELS = {
   total: 'Total',
 };
 
+// Grouped task report's fixed columns (docs/06-backend.md §9, rewritten) — every format
+// (html->pdf/jpeg, excel, docx) renders the SAME two tables per task, in this order.
+const TASK_HEADER_LABELS = ['Code Number', 'Task', 'Deadline', 'Remaining Days'];
+const UPDATE_TABLE_LABELS = ['Date', 'Updated By', 'Description', 'Completion %', 'Attachment'];
+const REPORT_COLUMN_COUNT = UPDATE_TABLE_LABELS.length; // the widest of the two tables — used for merges/spans
+
 function resolveColumns(requested, allColumns) {
   if (!requested || requested.length === 0) return allColumns;
   return allColumns.filter((c) => requested.includes(c));
@@ -53,8 +48,6 @@ function escapeHtml(str) {
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
   return String(str ?? '').replace(/[&<>"']/g, (c) => map[c]);
 }
-
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function formatShortDate(date) {
   const d = new Date(date);
@@ -95,34 +88,106 @@ function buildFilterDescription(filters = {}) {
   return parts.length > 0 ? parts.join(', ') : 'All Data';
 }
 
-/**
- * docs/06-backend.md §9: "Task Report" title; relevant task name/responsibility if the result is
- * a single task, or "All Responsible" if it spans multiple; the filter description above, or
- * "All Data" if none applied. Pure function — no DB access — so header-wording branches are
- * directly testable without generating an actual report file (per the Phase 8 testing instructions).
- */
-function buildHeaderInfo(tasks, filters) {
-  const subject = tasks.length === 1 ? `${tasks[0].title} (${tasks[0].responsibility})` : 'All Responsible';
+// docs/06-backend.md §9 — "Task Report" title + the filter description above, or "All Data" if
+// none applied. No longer names a single task/"All Responsible" — the report itself is now
+// organized by Zimmedar (assignee), which replaces that older single-vs-many-tasks framing
+// entirely (buildReportData below returns groups, not a flat task list).
+function buildHeaderInfo(filters) {
   return {
     title: 'Task Report',
-    subject,
     filterDescription: buildFilterDescription(filters),
   };
 }
 
-function getTaskCellValue(task, column) {
-  switch (column) {
-    case 'assignees':
-      return task.assignees.map((a) => a.name).join(', ');
-    case 'deadline':
-      return new Date(task.deadline).toLocaleDateString();
-    case 'timeStatus':
-      return `${task.timeStatus.type} (${task.timeStatus.days}d)`;
-    case 'completionPercent':
-      return `${task.completionPercent}%`;
+// "Baqi Din" (Remaining Days) — reuses the task's own already-computed timeStatus
+// (task.service.js's computeTimeStatus), phrased the same way the frontend's
+// formatTimeStatusLabel (frontend/src/utils/formatDate.js) reads it, just in English to match
+// this document's existing label convention.
+function formatRemainingDaysLabel(timeStatus) {
+  if (!timeStatus) return '-';
+  const { type, days } = timeStatus;
+  switch (type) {
+    case 'remaining':
+      return days === 0 ? 'Due today' : `${days} day(s) remaining`;
+    case 'overdue':
+      return `${days} day(s) overdue`;
+    case 'early':
+      return days === 0 ? 'Completed on time' : `${days} day(s) early`;
+    case 'late':
+      return `${days} day(s) late`;
     default:
-      return String(task[column] ?? '');
+      return '-';
   }
+}
+
+function attachmentLabel(attachment) {
+  if (!attachment) return '-';
+  return attachment.fileName || attachment.url || '-';
+}
+
+// docs/06-backend.md §9 (rewritten) — one section per Zimmedar (name + their OWN
+// User.responsibility, not the task's own responsibility field — that field described the task's
+// department/category at creation time and isn't repeated here now that tasks are grouped by
+// person instead of listed flat). A task with more than one assignee appears once per assignee it
+// actually has — EXCEPT when the caller filtered to one specific assigneeId, in which case every
+// matching task is placed only under that one Zimmedar's section (a co-assignee the admin didn't
+// ask to see must not leak a section of their own just because they share a task).
+function groupTasksByAssignee(tasksWithUpdates, { onlyAssigneeId } = {}) {
+  const groups = new Map();
+  tasksWithUpdates.forEach(({ task, updates }) => {
+    const relevantAssignees = onlyAssigneeId
+      ? task.assignees.filter((a) => String(a.id) === String(onlyAssigneeId))
+      : task.assignees;
+    relevantAssignees.forEach((assignee) => {
+      const key = String(assignee.id);
+      if (!groups.has(key)) {
+        groups.set(key, {
+          assignee: { id: assignee.id, name: assignee.name, responsibility: assignee.responsibility },
+          tasks: [],
+        });
+      }
+      groups.get(key).tasks.push({ task, updates });
+    });
+  });
+  return [...groups.values()].sort((a, b) => a.assignee.name.localeCompare(b.assignee.name));
+}
+
+// docs/06-backend.md §9 step 1 — reuses task.service.listTasks (unmodified), unpaginated, same
+// RBAC scoping as GET /tasks. Every matching task's full update history is always fetched (via
+// the same underlying query taskUpdate.service.js's listUpdates uses — not via listUpdates
+// itself, since that re-runs a per-task ownership check already redundant here, and paginates,
+// where a report needs the FULL history); lastUpdateOnly trims each task down to just its single
+// most recent entry afterward — the tasks matched, and which Zimmedar(an) they're grouped under,
+// never depend on this flag, only how much of each task's Updates section is shown.
+async function buildReportData(requestingUser, filters, { lastUpdateOnly } = {}) {
+  const { items: tasks } = await taskService.listTasks(requestingUser, filters, {
+    page: 1,
+    limit: UNPAGINATED_LIMIT,
+    sortBy: filters.sortBy,
+    sortOrder: filters.sortOrder,
+  });
+
+  let updatesByTaskId = {};
+  if (tasks.length > 0) {
+    const taskIds = tasks.map((t) => t._id);
+    const allUpdates = await TaskUpdate.find({ taskId: { $in: taskIds } })
+      .sort({ createdAt: -1 })
+      .populate('updatedBy', 'name role');
+    allUpdates.forEach((u) => {
+      const key = u.taskId.toString();
+      (updatesByTaskId[key] ||= []).push(u);
+    });
+  }
+
+  const tasksWithUpdates = tasks.map((task) => {
+    const allTaskUpdates = updatesByTaskId[task.id] || [];
+    const updates = lastUpdateOnly ? allTaskUpdates.slice(0, 1) : allTaskUpdates;
+    return { task, updates };
+  });
+
+  const groups = groupTasksByAssignee(tasksWithUpdates, { onlyAssigneeId: filters.assigneeId });
+
+  return { groups, lastUpdateOnly: Boolean(lastUpdateOnly) };
 }
 
 // Shared HTML shell — Jameel Noori Nastaleeq is referenced by name (the same font-family the
@@ -139,12 +204,15 @@ function htmlDocument(title, bodyHtml) {
 <style>
   body { font-family: 'Jameel Noori Nastaleeq', 'Noto Nastaliq Urdu', 'Noto Sans Arabic', serif; direction: rtl; margin: 24px; }
   h1 { font-size: 20px; margin-bottom: 4px; }
-  h2 { font-size: 16px; font-weight: normal; margin: 4px 0; }
   p.filter-description { color: #555; margin: 4px 0 16px; }
-  table { width: 100%; border-collapse: collapse; }
+  h2.assignee-header { font-size: 16px; margin: 20px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #2f6f4f; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
   th, td { border: 1px solid #ccc; padding: 6px; text-align: right; font-size: 12px; }
   th { background: #eef5ef; }
-  tr.update-row td { background: #f9f9f9; font-size: 11px; color: #333; }
+  table.task-header th, table.task-header td { background: #f5f5f5; }
+  h4.updates-heading { font-size: 13px; margin: 4px 0; }
+  table.updates-table { margin-bottom: 16px; }
+  td.empty-updates { text-align: center; color: #777; }
 </style>
 </head>
 <body>
@@ -153,32 +221,62 @@ ${bodyHtml}
 </html>`;
 }
 
-// docs/06-backend.md §9 — builds the HTML string rendered by generatePdf/generateJpeg.
-function renderReportHtml(data, { columns, headerInfo }) {
-  const activeColumns = resolveColumns(columns, TASK_COLUMNS);
-  const headRow = activeColumns.map((c) => `<th>${escapeHtml(TASK_COLUMN_LABELS[c])}</th>`).join('');
+function attachmentCellHtml(attachment) {
+  if (!attachment) return '-';
+  const label = escapeHtml(attachment.fileName || 'Attachment');
+  return attachment.url ? `<a href="${escapeHtml(attachment.url)}">${label}</a>` : label;
+}
 
-  const bodyRows = data.tasks
-    .map(({ task, updates }) => {
-      const cells = activeColumns.map((c) => `<td>${escapeHtml(getTaskCellValue(task, c))}</td>`).join('');
-      let row = `<tr>${cells}</tr>`;
-      if (data.reportType === 'detailed') {
-        row += updates
+function renderUpdateRowHtml(update) {
+  return `<tr>
+<td>${escapeHtml(formatDateShort(update.createdAt))}</td>
+<td>${escapeHtml(update.updatedBy?.name)}</td>
+<td>${escapeHtml(update.description)}</td>
+<td>${update.completionPercent}%</td>
+<td>${attachmentCellHtml(update.attachment)}</td>
+</tr>`;
+}
+
+function renderTaskBlockHtml(task, updates) {
+  const updatesRows =
+    updates.length > 0
+      ? updates.map((u) => renderUpdateRowHtml(u)).join('')
+      : `<tr><td colspan="${REPORT_COLUMN_COUNT}" class="empty-updates">No updates yet</td></tr>`;
+
+  return `
+<table class="task-header">
+<thead><tr>${TASK_HEADER_LABELS.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead>
+<tbody><tr>
+<td>${escapeHtml(task.codeNumber)}</td>
+<td>${escapeHtml(task.title)}</td>
+<td>${escapeHtml(formatDateShort(task.deadline))}</td>
+<td>${escapeHtml(formatRemainingDaysLabel(task.timeStatus))}</td>
+</tr></tbody>
+</table>
+<h4 class="updates-heading">Updates</h4>
+<table class="updates-table">
+<thead><tr>${UPDATE_TABLE_LABELS.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead>
+<tbody>${updatesRows}</tbody>
+</table>`;
+}
+
+// docs/06-backend.md §9 (rewritten) — builds the HTML string rendered by generatePdf/generateJpeg.
+function renderReportHtml(groups, { headerInfo }) {
+  const groupsHtml =
+    groups.length > 0
+      ? groups
           .map(
-            (u) =>
-              `<tr class="update-row"><td colspan="${activeColumns.length}">${new Date(u.createdAt).toLocaleString()} — ${escapeHtml(u.updatedBy?.name)}: ${escapeHtml(u.description)} (${u.completionPercent}%)</td></tr>`
+            (group) => `
+<h2 class="assignee-header">${escapeHtml(group.assignee.name)} — ${escapeHtml(group.assignee.responsibility)}</h2>
+${group.tasks.map(({ task, updates }) => renderTaskBlockHtml(task, updates)).join('')}`
           )
-          .join('');
-      }
-      return row;
-    })
-    .join('');
+          .join('')
+      : '<p>No tasks found.</p>';
 
   const body = `
 <h1>${escapeHtml(headerInfo.title)}</h1>
-<h2>${escapeHtml(headerInfo.subject)}</h2>
 <p class="filter-description">${escapeHtml(headerInfo.filterDescription)}</p>
-<table><thead><tr>${headRow}</tr></thead><tbody>${bodyRows}</tbody></table>`;
+${groupsHtml}`;
 
   return htmlDocument(headerInfo.title, body);
 }
@@ -195,37 +293,6 @@ function renderUserSummaryHtml(rows, { columns }) {
 <table><thead><tr>${headRow}</tr></thead><tbody>${bodyRows}</tbody></table>`;
 
   return htmlDocument('User-wise Summary Report', body);
-}
-
-// docs/06-backend.md §9 step 1 — reuses task.service.listTasks (unmodified), unpaginated, same
-// RBAC scoping as GET /tasks. If detailed, also fetches every matching task's full update
-// history via the same underlying query taskUpdate.service.js's listUpdates uses — not via
-// listUpdates itself, since that re-runs a per-task ownership check (already redundant: listTasks
-// already scoped the task set) and paginates (a report needs the FULL history, not one page).
-async function buildReportData(requestingUser, filters, reportType) {
-  const { items: tasks } = await taskService.listTasks(requestingUser, filters, {
-    page: 1,
-    limit: UNPAGINATED_LIMIT,
-    sortBy: filters.sortBy,
-    sortOrder: filters.sortOrder,
-  });
-
-  let updatesByTaskId = {};
-  if (reportType === 'detailed' && tasks.length > 0) {
-    const taskIds = tasks.map((t) => t._id);
-    const allUpdates = await TaskUpdate.find({ taskId: { $in: taskIds } })
-      .sort({ createdAt: -1 })
-      .populate('updatedBy', 'name role');
-    allUpdates.forEach((u) => {
-      const key = u.taskId.toString();
-      (updatesByTaskId[key] ||= []).push(u);
-    });
-  }
-
-  return {
-    tasks: tasks.map((task) => ({ task, updates: updatesByTaskId[task.id] || [] })),
-    reportType,
-  };
 }
 
 // docs/06-backend.md §9 — Admin-only (enforced by requireRole('admin') on the route, same
@@ -263,34 +330,6 @@ async function buildUserSummaryData(_requestingUser) {
 // overhead per request is a good trade for simplicity and zero risk of a leaked zombie browser.
 async function withBrowserPage(fn) {
   const { default: puppeteer } = await import('puppeteer');
-  // Full `puppeteer` (not `puppeteer-core`) ships its own bundled Chromium and resolves it
-  // automatically — this code never sets `executablePath` in launchOptions (removed the
-  // `if (process.env.PUPPETEER_EXECUTABLE_PATH)` override that used to be here).
-  //
-  // IMPORTANT — this code-level fix is NOT sufficient on its own if PUPPETEER_EXECUTABLE_PATH is
-  // set as an actual environment variable (Render dashboard, shell, etc.): puppeteer's own
-  // getConfiguration() (node_modules/puppeteer/lib/puppeteer/getConfiguration.js) reads that env
-  // var directly from process.env and threads it through BrowserLauncher.resolveExecutablePath()
-  // as the browser's default executablePath — entirely independent of whatever this file's
-  // launchOptions object contains. Confirmed locally: even with no code-level override, this
-  // process still launches the Chrome at backend/.env.test's PUPPETEER_EXECUTABLE_PATH, because
-  // puppeteer reads it internally. If Render's production environment has this variable set
-  // (to the Windows-only path from .env.test, or anything else), it MUST be removed from Render's
-  // own environment-variable dashboard — no code change here can override puppeteer's own env-var
-  // resolution. The debug line below prints the actual resolved path on every export so Render's
-  // logs give direct proof of what's happening at runtime; remove it once confirmed fixed there.
-  console.log('[DEBUG] Puppeteer executablePath resolved to:', await puppeteer.executablePath());
-  const fs = require('fs');
-  const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
-  try {
-    console.log('[DEBUG] PUPPETEER_CACHE_DIR env:', process.env.PUPPETEER_CACHE_DIR);
-    console.log('[DEBUG] Cache dir exists?', cacheDir, fs.existsSync(cacheDir));
-    if (fs.existsSync(cacheDir)) {
-      console.log('[DEBUG] Cache dir full contents:', JSON.stringify(fs.readdirSync(cacheDir, { recursive: true })));
-    }
-  } catch (e) {
-    console.log('[DEBUG] Error reading cache dir:', e.message);
-  }
   const launchOptions = {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   };
@@ -299,7 +338,6 @@ async function withBrowserPage(fn) {
     browser = await puppeteer.launch(launchOptions);
   } catch (launchError) {
     logger.error('Puppeteer browser launch failed:', launchError);
-    console.error('Puppeteer browser launch failed stack:', launchError.stack || launchError);
     throw launchError;
   }
 
@@ -308,13 +346,11 @@ async function withBrowserPage(fn) {
     return await fn(page);
   } catch (pageError) {
     logger.error('Puppeteer report generation failed on page:', pageError);
-    console.error('Puppeteer report generation failed stack:', pageError.stack || pageError);
     throw pageError;
   } finally {
     if (browser) {
       await browser.close().catch((closeError) => {
         logger.error('Failed to close Puppeteer browser:', closeError);
-        console.error('Failed to close Puppeteer browser stack:', closeError.stack || closeError);
       });
     }
   }
@@ -338,22 +374,72 @@ async function generateJpeg(html) {
   });
 }
 
-// docs/06-backend.md §9 — exceljs, sheet views: { rightToLeft: true }, Urdu cells:
-// alignment: { readingOrder: 'rtl' }.
-async function generateExcel(data, { columns }) {
-  const activeColumns = resolveColumns(columns, TASK_COLUMNS);
+// docs/06-backend.md §9 — exceljs, sheet views: { rightToLeft: true }, cells: alignment:
+// { readingOrder: 'rtl' }. Since the report is now a sequence of differently-shaped blocks
+// (a section header, a task's 2-row header table, an "Updates" label, that task's own update
+// table) rather than one flat table, this is built as a plain sequence of rows on one sheet,
+// merged where a "row" is really a single full-width label — REPORT_COLUMN_COUNT (5, the
+// Updates table's own width) is used as the merge span throughout so every block lines up.
+async function generateExcel(data, { headerInfo }) {
   const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet('Tasks', { views: [{ rightToLeft: true }] });
-  sheet.columns = activeColumns.map((c) => ({ header: TASK_COLUMN_LABELS[c], key: c, width: 22 }));
+  const sheet = workbook.addWorksheet('Task Report', { views: [{ rightToLeft: true }] });
+  sheet.columns = Array.from({ length: REPORT_COLUMN_COUNT }, () => ({ width: 24 }));
 
-  data.tasks.forEach(({ task }) => {
-    const rowValues = {};
-    activeColumns.forEach((c) => {
-      rowValues[c] = getTaskCellValue(task, c);
-    });
-    const row = sheet.addRow(rowValues);
+  function addMergedRow(text, { bold = false, italic = false } = {}) {
+    const row = sheet.addRow([text]);
+    sheet.mergeCells(row.number, 1, row.number, REPORT_COLUMN_COUNT);
+    const cell = row.getCell(1);
+    cell.font = { bold, italic };
+    cell.alignment = { readingOrder: 'rtl' };
+    return row;
+  }
+
+  function addDataRow(values, { bold = false } = {}) {
+    const row = sheet.addRow(values);
     row.eachCell((cell) => {
       cell.alignment = { readingOrder: 'rtl' };
+      if (bold) cell.font = { bold: true };
+    });
+    return row;
+  }
+
+  addMergedRow(headerInfo.title, { bold: true });
+  addMergedRow(headerInfo.filterDescription);
+  sheet.addRow([]);
+
+  if (data.groups.length === 0) {
+    addMergedRow('No tasks found.');
+  }
+
+  data.groups.forEach((group) => {
+    addMergedRow(`${group.assignee.name} — ${group.assignee.responsibility}`, { bold: true });
+
+    group.tasks.forEach(({ task, updates }) => {
+      addDataRow(TASK_HEADER_LABELS, { bold: true });
+      addDataRow([task.codeNumber, task.title, formatDateShort(task.deadline), formatRemainingDaysLabel(task.timeStatus)]);
+
+      addMergedRow('Updates', { italic: true });
+      addDataRow(UPDATE_TABLE_LABELS, { bold: true });
+
+      if (updates.length === 0) {
+        addMergedRow('No updates yet');
+      } else {
+        updates.forEach((u) => {
+          const row = addDataRow([
+            formatDateShort(u.createdAt),
+            u.updatedBy?.name || '-',
+            u.description,
+            `${u.completionPercent}%`,
+            attachmentLabel(u.attachment),
+          ]);
+          if (u.attachment?.url) {
+            const cell = row.getCell(REPORT_COLUMN_COUNT);
+            cell.value = { text: attachmentLabel(u.attachment), hyperlink: u.attachment.url };
+          }
+        });
+      }
+
+      sheet.addRow([]);
     });
   });
 
@@ -380,11 +466,118 @@ async function generateUserSummaryExcel(rows, { columns }) {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
+// docs/06-backend.md §9 — Word export (docx package), same grouped-by-Zimmedar structure as
+// every other format: a heading + table per task inside each Zimmedar's own heading section.
+function docxCell(text, { bold = false, header = false } = {}) {
+  return new TableCell({
+    children: [new Paragraph({ bidirectional: true, children: [new TextRun({ text: String(text ?? '-'), bold: bold || header })] })],
+    shading: header ? { fill: 'EEF5EF' } : undefined,
+  });
+}
+
+function docxAttachmentCell(attachment) {
+  if (!attachment?.url) return docxCell(attachmentLabel(attachment));
+  return new TableCell({
+    children: [
+      new Paragraph({
+        bidirectional: true,
+        children: [new ExternalHyperlink({ link: attachment.url, children: [new TextRun({ text: attachment.fileName || 'Attachment', style: 'Hyperlink' })] })],
+      }),
+    ],
+  });
+}
+
+function docxTaskHeaderTable(task) {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({ children: TASK_HEADER_LABELS.map((l) => docxCell(l, { header: true })) }),
+      new TableRow({
+        children: [
+          docxCell(task.codeNumber),
+          docxCell(task.title),
+          docxCell(formatDateShort(task.deadline)),
+          docxCell(formatRemainingDaysLabel(task.timeStatus)),
+        ],
+      }),
+    ],
+  });
+}
+
+function docxUpdatesTable(updates) {
+  const headerRow = new TableRow({ children: UPDATE_TABLE_LABELS.map((l) => docxCell(l, { header: true })) });
+
+  if (updates.length === 0) {
+    return new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [
+        headerRow,
+        new TableRow({
+          children: [
+            new TableCell({
+              columnSpan: REPORT_COLUMN_COUNT,
+              children: [new Paragraph({ bidirectional: true, alignment: 'center', children: [new TextRun('No updates yet')] })],
+            }),
+          ],
+        }),
+      ],
+    });
+  }
+
+  const dataRows = updates.map(
+    (u) =>
+      new TableRow({
+        children: [
+          docxCell(formatDateShort(u.createdAt)),
+          docxCell(u.updatedBy?.name || '-'),
+          docxCell(u.description),
+          docxCell(`${u.completionPercent}%`),
+          docxAttachmentCell(u.attachment),
+        ],
+      })
+  );
+
+  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...dataRows] });
+}
+
+async function generateDocx(data, { headerInfo }) {
+  const children = [
+    new Paragraph({ heading: HeadingLevel.HEADING_1, bidirectional: true, children: [new TextRun(headerInfo.title)] }),
+    new Paragraph({ bidirectional: true, children: [new TextRun(headerInfo.filterDescription)] }),
+  ];
+
+  if (data.groups.length === 0) {
+    children.push(new Paragraph({ bidirectional: true, children: [new TextRun('No tasks found.')] }));
+  }
+
+  data.groups.forEach((group) => {
+    children.push(
+      new Paragraph({
+        heading: HeadingLevel.HEADING_2,
+        bidirectional: true,
+        children: [new TextRun(`${group.assignee.name} — ${group.assignee.responsibility}`)],
+      })
+    );
+
+    group.tasks.forEach(({ task, updates }) => {
+      children.push(docxTaskHeaderTable(task));
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_4, bidirectional: true, children: [new TextRun('Updates')] }));
+      children.push(docxUpdatesTable(updates));
+      children.push(new Paragraph({ children: [] })); // spacer between tasks
+    });
+  });
+
+  const doc = new Document({ sections: [{ children }] });
+  return Packer.toBuffer(doc);
+}
+
 // Thin format dispatch, used by the controller so it stays free of business logic
-// (docs/03-backend-foundation.md's controller convention).
-async function generateReportFile(data, { format, columns, headerInfo }) {
-  if (format === 'excel') return generateExcel(data, { columns });
-  const html = renderReportHtml(data, { columns, headerInfo });
+// (docs/03-backend-foundation.md's controller convention). Every format renders the SAME data
+// (data.groups) — no per-format branching in how the report is built, only in how it's rendered.
+async function generateReportFile(data, { format, headerInfo }) {
+  if (format === 'excel') return generateExcel(data, { headerInfo });
+  if (format === 'docx') return generateDocx(data, { headerInfo });
+  const html = renderReportHtml(data.groups, { headerInfo });
   return format === 'pdf' ? generatePdf(html) : generateJpeg(html);
 }
 
@@ -397,14 +590,17 @@ async function generateUserSummaryFile(rows, { format, columns }) {
 module.exports = {
   buildReportData,
   buildHeaderInfo,
+  groupTasksByAssignee,
   renderReportHtml,
   renderUserSummaryHtml,
   buildUserSummaryData,
   generatePdf,
   generateJpeg,
   generateExcel,
+  generateDocx,
   generateUserSummaryExcel,
   generateReportFile,
   generateUserSummaryFile,
   buildFilterDescription,
+  formatRemainingDaysLabel,
 };

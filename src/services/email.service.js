@@ -1,6 +1,7 @@
 const nodemailer = require('nodemailer');
 const env = require('../config/env');
 const logger = require('../utils/logger');
+const { formatDateShort } = require('../utils/formatDate');
 
 // docs/06-backend.md §7: "A single nodemailer transporter created once at startup from the
 // SMTP_* env vars." Creating the transporter does not itself connect to the SMTP server —
@@ -34,7 +35,7 @@ function buildEmailHtml({ headingEn, headingUr, task }) {
   <h2>${escapeHtml(headingEn)} / <span dir="rtl">${escapeHtml(headingUr)}</span></h2>
   <p><strong>Task / کام:</strong> ${escapeHtml(task.title)}</p>
   <p><strong>Code Number:</strong> ${escapeHtml(task.codeNumber)}</p>
-  <p><strong>Deadline / آخری تاریخ:</strong> ${new Date(task.deadline).toLocaleDateString()}</p>
+  <p><strong>Deadline / آخری تاریخ:</strong> ${formatDateShort(task.deadline)}</p>
   <p><a href="${link}">${link}</a></p>
 </body>
 </html>`;

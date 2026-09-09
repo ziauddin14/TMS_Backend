@@ -32,14 +32,20 @@ async function makeLookup(value = 'Donation Box Incharge') {
 function inDays(n) {
   return new Date(Date.now() + n * 24 * 60 * 60 * 1000);
 }
+function bufferParser(response, callback) {
+  const chunks = [];
+  response.on('data', (chunk) => chunks.push(chunk));
+  response.on('end', () => callback(null, Buffer.concat(chunks)));
+}
 
-const CONTENT_TYPES = {
+const TASK_REPORT_CONTENT_TYPES = {
   excel: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   pdf: 'application/pdf',
   jpeg: 'image/jpeg',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 };
 
-describe('GET /api/v1/reports/export', () => {
+describe('GET /api/v1/reports/export (grouped-by-Zimmedar report, rewritten)', () => {
   let admin;
   let assignee;
 
@@ -53,48 +59,40 @@ describe('GET /api/v1/reports/export', () => {
       .send({ title: 'X', assignees: [assignee.id], responsibility: lookup.value, deadline: inDays(5) });
   });
 
-  it.each([
-    ['excel', 'summary'],
-    ['excel', 'detailed'],
-    ['pdf', 'summary'],
-    ['pdf', 'detailed'],
-    ['jpeg', 'summary'],
-    ['jpeg', 'detailed'],
-  ])('format=%s reportType=%s returns 200, correct Content-Type, and a non-empty body', async (format, reportType) => {
+  it.each(['excel', 'pdf', 'jpeg', 'docx'])('format=%s returns 200, correct Content-Type, and a non-empty body', async (format) => {
     const res = await request(app)
-      .get(`/api/v1/reports/export?format=${format}&reportType=${reportType}`)
+      .get(`/api/v1/reports/export?format=${format}`)
       .set('Authorization', `Bearer ${tokenFor(admin)}`)
       .buffer(true)
-      .parse((response, callback) => {
-        const chunks = [];
-        response.on('data', (chunk) => chunks.push(chunk));
-        response.on('end', () => callback(null, Buffer.concat(chunks)));
-      });
+      .parse(bufferParser);
 
     expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toBe(CONTENT_TYPES[format]);
+    expect(res.headers['content-type']).toBe(TASK_REPORT_CONTENT_TYPES[format]);
     expect(res.headers['content-disposition']).toContain('attachment');
     expect(res.body.length).toBeGreaterThan(0);
   }, 30000);
 
-  it('rejects an invalid format with VALIDATION_ERROR', async () => {
+  it('accepts lastUpdateOnly=true alongside any format', async () => {
     const res = await request(app)
-      .get('/api/v1/reports/export?format=bogus&reportType=summary')
-      .set('Authorization', `Bearer ${tokenFor(admin)}`);
-    expect(res.status).toBe(400);
-    expect(res.body.code).toBe('VALIDATION_ERROR');
+      .get('/api/v1/reports/export?format=excel&lastUpdateOnly=true')
+      .set('Authorization', `Bearer ${tokenFor(admin)}`)
+      .buffer(true)
+      .parse(bufferParser);
+
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBeGreaterThan(0);
   });
 
-  it('rejects an invalid reportType with VALIDATION_ERROR', async () => {
+  it('rejects an invalid format with VALIDATION_ERROR', async () => {
     const res = await request(app)
-      .get('/api/v1/reports/export?format=excel&reportType=bogus')
+      .get('/api/v1/reports/export?format=bogus')
       .set('Authorization', `Bearer ${tokenFor(admin)}`);
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('VALIDATION_ERROR');
   });
 
   it('rejects an unauthenticated request', async () => {
-    const res = await request(app).get('/api/v1/reports/export?format=excel&reportType=summary');
+    const res = await request(app).get('/api/v1/reports/export?format=excel');
     expect(res.status).toBe(401);
   });
 
@@ -108,42 +106,36 @@ describe('GET /api/v1/reports/export', () => {
       .send({ title: 'Not mine', assignees: [other.id], responsibility: 'Donation Box Incharge', deadline: inDays(5) });
 
     const res = await request(app)
-      .get('/api/v1/reports/export?format=excel&reportType=summary')
+      .get('/api/v1/reports/export?format=excel')
       .set('Authorization', `Bearer ${tokenFor(assignee)}`)
       .buffer(true)
-      .parse((response, callback) => {
-        const chunks = [];
-        response.on('data', (chunk) => chunks.push(chunk));
-        response.on('end', () => callback(null, Buffer.concat(chunks)));
-      });
+      .parse(bufferParser);
 
     expect(res.status).toBe(200);
-    // Can't easily assert row count from a raw buffer here without re-parsing; the RBAC scoping
-    // itself is already proven directly at the service level (report.service.test.js) — this
-    // route-level check just confirms the endpoint doesn't error for a scoped User.
+    // Can't easily assert group/row content from a raw buffer here without re-parsing; the RBAC
+    // scoping itself is already proven directly at the service level (report.service.test.js) —
+    // this route-level check just confirms the endpoint doesn't error for a scoped User.
   });
 
-  it('applies a reduced columns list (excel, verifiable by re-parsing the workbook)', async () => {
+  it('the excel export contains the assignee’s own section header, re-parseable from the workbook', async () => {
     const ExcelJS = require('exceljs');
     const res = await request(app)
-      .get('/api/v1/reports/export?format=excel&reportType=summary&columns=codeNumber,title')
+      .get('/api/v1/reports/export?format=excel')
       .set('Authorization', `Bearer ${tokenFor(admin)}`)
       .buffer(true)
-      .parse((response, callback) => {
-        const chunks = [];
-        response.on('data', (chunk) => chunks.push(chunk));
-        response.on('end', () => callback(null, Buffer.concat(chunks)));
-      });
+      .parse(bufferParser);
 
     expect(res.status).toBe(200);
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(res.body);
-    const headerValues = workbook.worksheets[0].getRow(1).values.filter(Boolean);
-    expect(headerValues).toEqual(['Code Number', 'Task']);
+    const sheet = workbook.worksheets[0];
+    const allText = [];
+    sheet.eachRow((row) => row.eachCell((cell) => allText.push(String(cell.value?.text ?? cell.value ?? ''))));
+    expect(allText.join(' | ')).toContain(assignee.name);
   });
 });
 
-describe('GET /api/v1/reports/user-summary', () => {
+describe('GET /api/v1/reports/user-summary (untouched by the task-report rewrite)', () => {
   it.each(['excel', 'pdf', 'jpeg'])('format=%s returns 200, correct Content-Type, non-empty body', async (format) => {
     const admin = await makeAdmin();
 
@@ -151,16 +143,21 @@ describe('GET /api/v1/reports/user-summary', () => {
       .get(`/api/v1/reports/user-summary?format=${format}`)
       .set('Authorization', `Bearer ${tokenFor(admin)}`)
       .buffer(true)
-      .parse((response, callback) => {
-        const chunks = [];
-        response.on('data', (chunk) => chunks.push(chunk));
-        response.on('end', () => callback(null, Buffer.concat(chunks)));
-      });
+      .parse(bufferParser);
 
     expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toBe(CONTENT_TYPES[format]);
+    expect(res.headers['content-type']).toBe(TASK_REPORT_CONTENT_TYPES[format]);
     expect(res.body.length).toBeGreaterThan(0);
   }, 30000);
+
+  it('rejects a docx format request (only the task report supports docx)', async () => {
+    const admin = await makeAdmin();
+    const res = await request(app)
+      .get('/api/v1/reports/user-summary?format=docx')
+      .set('Authorization', `Bearer ${tokenFor(admin)}`);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('VALIDATION_ERROR');
+  });
 
   it('rejects a non-Admin User with FORBIDDEN_ROLE', async () => {
     const user = await makeUser();
