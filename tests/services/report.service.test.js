@@ -39,9 +39,15 @@ function inDays(n) {
 
 describe('buildHeaderInfo / buildFilterDescription (docs/06-backend.md §9 header wording)', () => {
   it('shows "All Data" when no filter was applied', () => {
-    const info = reportService.buildHeaderInfo({});
+    const info = reportService.buildHeaderInfo({ name: 'Admin Person', responsibility: 'Admin' }, {});
     expect(info.title).toBe('Task Report');
     expect(info.filterDescription).toBe('All Data');
+  });
+
+  it('carries the report-generator line (name + their own responsibility) and today\'s date, in the same "dd MMM yy" format used everywhere else', () => {
+    const info = reportService.buildHeaderInfo({ name: 'Admin Person', responsibility: 'Zonal Incharge' }, {});
+    expect(info.generatedByLine).toBe('Admin Person (Zonal Incharge)');
+    expect(info.generatedAtLabel).toMatch(/^\d{2} [A-Za-z]{3} \d{2}$/); // e.g. "09 Sep 26" — today, so not hardcoded
   });
 
   it('builds the exact documented example: "Status: Ongoing, Deadline: Aug 1–31"', () => {
@@ -222,8 +228,30 @@ describe('buildReportData (docs/06-backend.md §9 step 1, rewritten: grouped by 
   });
 });
 
-describe('renderReportHtml (pure — grouped structure)', () => {
-  it('renders an assignee header, task header row, and Updates table, per group/task', () => {
+const SAMPLE_HEADER_INFO = {
+  title: 'Task Report',
+  filterDescription: 'All Data',
+  generatedByLine: 'Admin Person (Admin)',
+  generatedAtLabel: '09 Sep 26',
+};
+
+describe('renderReportHtml (pure — grouped structure, branded header, exact Urdu labels)', () => {
+  it('renders the branded header (logo, app name, generated-by/at lines) once, before any group', () => {
+    const html = reportService.renderReportHtml([], { headerInfo: SAMPLE_HEADER_INFO });
+
+    expect(html).toContain('data:image/png;base64,');
+    expect(html).toContain('ٹاسک مینجمنٹ سسٹم');
+    // Prompt — the LTR value (name/date) is wrapped in <bdi> so the browser's bidi algorithm
+    // doesn't reorder it relative to the Urdu label it follows (caught by actually opening a
+    // generated .jpg — see the chat report); label and value are asserted separately rather than
+    // as one un-tagged substring.
+    expect(html).toContain('رپورٹ جنریٹ کرنے والا:');
+    expect(html).toContain('<bdi>Admin Person (Admin)</bdi>');
+    expect(html).toContain('رپورٹ کی تاریخ:');
+    expect(html).toContain('<bdi>09 Sep 26</bdi>');
+  });
+
+  it('renders an assignee header (with the exact ذمہ دار/ذمہ داری labels), task header row, and اپڈیٹس table, per group/task', () => {
     const groups = [
       {
         assignee: { id: 'u1', name: 'Ali', responsibility: 'IT' },
@@ -238,14 +266,20 @@ describe('renderReportHtml (pure — grouped structure)', () => {
       },
     ];
 
-    const html = reportService.renderReportHtml(groups, { headerInfo: { title: 'Task Report', filterDescription: 'All Data' } });
+    const html = reportService.renderReportHtml(groups, { headerInfo: SAMPLE_HEADER_INFO });
 
-    expect(html).toContain('Ali — IT');
+    expect(html).toContain('ذمہ دار:');
+    expect(html).toContain('<bdi>Ali</bdi>');
+    expect(html).toContain('ذمہ داری:');
+    expect(html).toContain('<bdi>IT</bdi>');
     expect(html).toContain('260801');
     expect(html).toContain('Collect boxes');
-    expect(html).toContain('Updates');
+    expect(html).toContain('اپڈیٹس');
     expect(html).toContain('Progress made');
     expect(html).toContain('40%');
+    // exact Urdu column labels, verbatim from the client's given term list — not invented.
+    ['کام کوڈ', 'کام', 'آخری تاریخ', 'باقی دن'].forEach((label) => expect(html).toContain(label));
+    ['تاریخ', 'رپلائی کرنے والا', 'وضاحت', 'تکمیل فیصد', 'اٹیچمنٹ'].forEach((label) => expect(html).toContain(label));
   });
 
   it('shows "No updates yet" for a task with an empty updates array', () => {
@@ -255,13 +289,56 @@ describe('renderReportHtml (pure — grouped structure)', () => {
         tasks: [{ task: { codeNumber: '1', title: 'T', deadline: new Date(), timeStatus: { type: 'remaining', days: 1 } }, updates: [] }],
       },
     ];
-    const html = reportService.renderReportHtml(groups, { headerInfo: { title: 'Task Report', filterDescription: 'All Data' } });
+    const html = reportService.renderReportHtml(groups, { headerInfo: SAMPLE_HEADER_INFO });
     expect(html).toContain('No updates yet');
   });
 
   it('shows "No tasks found." when there are zero groups', () => {
-    const html = reportService.renderReportHtml([], { headerInfo: { title: 'Task Report', filterDescription: 'All Data' } });
+    const html = reportService.renderReportHtml([], { headerInfo: SAMPLE_HEADER_INFO });
     expect(html).toContain('No tasks found.');
+  });
+
+  it('the brand-green color (#1F6F3F) is applied to headings/dividers/table headers, scoped so it never touches the separate user-summary report', () => {
+    const html = reportService.renderReportHtml([], { headerInfo: SAMPLE_HEADER_INFO });
+    expect(html).toContain('#1F6F3F');
+    expect(html).toContain('.task-report');
+
+    const userSummaryHtml = reportService.renderUserSummaryHtml([], { columns: undefined });
+    expect(userSummaryHtml).not.toContain('class="task-report"');
+  });
+
+  // Prompt — regression tests for two bugs only found by actually opening a generated .jpg (not
+  // by reading the HTML/CSS, which looked correct): (1) LTR values inside an RTL page get their
+  // word order reversed by the browser's bidi algorithm unless isolated; (2) a JPEG export with
+  // no explicit page background flattens transparency to black, not white.
+  it('every LTR data value (dates, code numbers, names, percentages, descriptions) is wrapped in <bdi> to prevent bidi reordering', () => {
+    const groups = [
+      {
+        assignee: { id: 'u1', name: 'Ali Raza', responsibility: 'IT' },
+        tasks: [
+          {
+            task: { codeNumber: '260801', title: 'Collect boxes', deadline: new Date('2026-09-01'), timeStatus: { type: 'remaining', days: 5 } },
+            updates: [
+              { createdAt: new Date('2026-08-20'), updatedBy: { name: 'Ali Raza' }, description: 'Progress made', completionPercent: 40, attachment: null },
+            ],
+          },
+        ],
+      },
+    ];
+    const html = reportService.renderReportHtml(groups, { headerInfo: SAMPLE_HEADER_INFO });
+
+    expect(html).toContain('<bdi>01 Sep 26</bdi>'); // deadline
+    expect(html).toContain('<bdi>20 Aug 26</bdi>'); // update date
+    expect(html).toContain('<bdi>260801</bdi>');
+    expect(html).toContain('<bdi>Collect boxes</bdi>');
+    expect(html).toContain('<bdi>Progress made</bdi>');
+    expect(html).toContain('<bdi>40%</bdi>');
+    expect(html).toContain('<bdi>Ali Raza</bdi>');
+  });
+
+  it('the page has an explicit white background (so a JPEG export never flattens to black)', () => {
+    const html = reportService.renderReportHtml([], { headerInfo: SAMPLE_HEADER_INFO });
+    expect(html).toMatch(/body\s*\{[^}]*background:\s*#fff/);
   });
 });
 
@@ -312,7 +389,7 @@ describe('generateExcel (exceljs, real generation, rewritten grouped structure)'
     );
     await taskUpdateService.createUpdate({ id: admin.id, role: 'admin' }, task.id, { description: 'Progress', completionPercent: 40 });
     const data = await reportService.buildReportData({ id: admin.id, role: 'admin' }, {}, {});
-    const headerInfo = reportService.buildHeaderInfo({});
+    const headerInfo = reportService.buildHeaderInfo({ id: admin.id, name: admin.name, responsibility: admin.responsibility }, {});
 
     const buffer = await reportService.generateExcel(data, { headerInfo });
     expect(buffer.length).toBeGreaterThan(0);
@@ -325,11 +402,23 @@ describe('generateExcel (exceljs, real generation, rewritten grouped structure)'
     const allText = [];
     sheet.eachRow((row) => row.eachCell((cell) => allText.push(String(cell.value?.text ?? cell.value ?? ''))));
     const joined = allText.join(' | ');
+    expect(joined).toContain('ٹاسک مینجمنٹ سسٹم');
+    expect(joined).toContain(`${admin.name} (${admin.responsibility})`);
     expect(joined).toContain('Task Report');
     expect(joined).toContain('Ali');
     expect(joined).toContain('Collect boxes');
-    expect(joined).toContain('Updates');
+    expect(joined).toContain('اپڈیٹس');
     expect(joined).toContain('Progress');
+    // exact Urdu column labels
+    ['کام کوڈ', 'کام', 'آخری تاریخ', 'باقی دن', 'تاریخ', 'رپلائی کرنے والا', 'وضاحت', 'تکمیل فیصد', 'اٹیچمنٹ'].forEach((label) =>
+      expect(joined).toContain(label)
+    );
+
+    // brand-green fill on a table header row (e.g. the task-header row's first cell).
+    const headerCandidateRow = sheet
+      .getRows(1, sheet.rowCount)
+      .find((row) => row.getCell(1).value === 'کام کوڈ');
+    expect(headerCandidateRow.getCell(1).fill.fgColor.argb).toBe('FF1F6F3F');
   });
 
   it('generateUserSummaryExcel produces a non-empty .xlsx with rightToLeft view (untouched by the rewrite)', async () => {
@@ -356,7 +445,7 @@ describe('generateDocx (docx package, real generation)', () => {
     );
     await taskUpdateService.createUpdate({ id: admin.id, role: 'admin' }, task.id, { description: 'Progress', completionPercent: 40 });
     const data = await reportService.buildReportData({ id: admin.id, role: 'admin' }, {}, {});
-    const headerInfo = reportService.buildHeaderInfo({});
+    const headerInfo = reportService.buildHeaderInfo({ id: admin.id, name: admin.name, responsibility: admin.responsibility }, {});
 
     const buffer = await reportService.generateDocx(data, { headerInfo });
 
@@ -367,7 +456,7 @@ describe('generateDocx (docx package, real generation)', () => {
   });
 
   it('handles zero groups without throwing (an empty Document/Packer round-trip still works)', async () => {
-    const buffer = await reportService.generateDocx({ groups: [] }, { headerInfo: { title: 'Task Report', filterDescription: 'All Data' } });
+    const buffer = await reportService.generateDocx({ groups: [] }, { headerInfo: SAMPLE_HEADER_INFO });
     expect(buffer.length).toBeGreaterThan(0);
   });
 });

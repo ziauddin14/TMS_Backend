@@ -27,7 +27,7 @@ const exportReport = asyncHandler(async (req, res) => {
   const { format, lastUpdateOnly, ...filters } = req.query;
 
   const data = await reportService.buildReportData(req.user, filters, { lastUpdateOnly });
-  const headerInfo = reportService.buildHeaderInfo(filters);
+  const headerInfo = reportService.buildHeaderInfo(req.user, filters);
   const buffer = await reportService.generateReportFile(data, { format, headerInfo });
 
   sendFile(res, { format, buffer, filenamePrefix: 'task-report' });
