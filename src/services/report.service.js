@@ -43,6 +43,18 @@ const LOGO_PATH = path.join(__dirname, '../assets/logo.png');
 const LOGO_BUFFER = fs.readFileSync(LOGO_PATH);
 const LOGO_BASE64 = LOGO_BUFFER.toString('base64');
 
+// Prompt — the real Jameel Noori Nastaleeq font file still doesn't exist anywhere in this
+// project (frontend/src/assets/fonts/README.md has flagged this as a client-provided-later gap
+// since Phase 8); asked directly, the client chose a working substitute now over broken glyphs.
+// "Noto Nastaliq Urdu" (Google Fonts, SIL Open Font License — free to embed/redistribute) is a
+// COMPLETE Nastaliq font, unlike whatever partial/absent Arabic-script font Puppeteer's headless
+// Chromium and a viewer's Word happened to fall back to in production — that's what was actually
+// dropping "ہ"/mangling "آ", not a wrong font NAME. Swap in the real file at the paths below
+// (same names) the moment the client provides it; nothing else needs to change.
+const NASTALIQ_FONT_NAME = 'Noto Nastaliq Urdu';
+const NASTALIQ_WOFF2_BASE64 = fs.readFileSync(path.join(__dirname, '../assets/fonts/NotoNastaliqUrdu-Regular.woff2')).toString('base64');
+const NASTALIQ_TTF_BUFFER = fs.readFileSync(path.join(__dirname, '../assets/fonts/NotoNastaliqUrdu-Regular.ttf'));
+
 const USER_SUMMARY_COLUMNS = ['name', 'responsibility', 'ongoing', 'pending', 'complete', 'closed', 'excellent', 'good', 'fair', 'weak', 'notApplicable', 'total'];
 const USER_SUMMARY_COLUMN_LABELS = {
   name: 'Name',
@@ -71,6 +83,7 @@ const RESPONSIBILITY_LABEL = 'ذمہ داری';
 const BRAND_TITLE = 'ٹاسک مینجمنٹ سسٹم';
 const GENERATED_BY_LABEL = 'رپورٹ جنریٹ کرنے والا';
 const GENERATED_AT_LABEL = 'رپورٹ کی تاریخ';
+const EMPTY_UPDATES_TEXT = 'کوئی اپڈیٹ نہیں';
 const REPORT_COLUMN_COUNT = UPDATE_TABLE_LABELS.length; // the widest of the two tables — used for merges/spans
 
 function resolveColumns(requested, allColumns) {
@@ -147,7 +160,7 @@ function buildFilterDescription(filters = {}) {
 // duplicated per format.
 function buildHeaderInfo(requestingUser, filters) {
   return {
-    title: 'Task Report',
+    title: 'ٹاسک رپورٹ',
     filterDescription: buildFilterDescription(filters),
     generatedByLine: `${requestingUser.name} (${requestingUser.responsibility})`,
     generatedAtLabel: formatDateShort(new Date()),
@@ -155,22 +168,25 @@ function buildHeaderInfo(requestingUser, filters) {
 }
 
 // "Baqi Din" (Remaining Days) — reuses the task's own already-computed timeStatus
-// (task.service.js's computeTimeStatus), phrased the same way the frontend's
-// formatTimeStatusLabel (frontend/src/utils/formatDate.js) reads it, just in English to match
-// this document's existing label convention (this specific phrase wasn't in the client's given
-// Urdu term list, so it stays as-is rather than inventing a translation for it).
+// (task.service.js's computeTimeStatus). Prompt — converted to Urdu; "remaining"/"early" use the
+// client's own exact given strings, and this now matches the SAME wording the frontend's own
+// formatTimeStatusLabel (frontend/src/utils/formatDate.js) already uses for this exact concept
+// elsewhere in the app. "overdue" wasn't one of the three strings the client called out (their
+// sample likely just didn't happen to include a still-open overdue task) — ported from that same
+// frontend precedent rather than left in English. days===0 edge cases (not in the client's given
+// list either) also borrow the frontend's existing wording for consistency.
 function formatRemainingDaysLabel(timeStatus) {
   if (!timeStatus) return '-';
   const { type, days } = timeStatus;
   switch (type) {
     case 'remaining':
-      return days === 0 ? 'Due today' : `${days} day(s) remaining`;
+      return days === 0 ? 'آج آخری تاریخ ہے' : `${days} دن باقی`;
     case 'overdue':
-      return `${days} day(s) overdue`;
+      return `${days} دن تاخیر سے`;
     case 'early':
-      return days === 0 ? 'Completed on time' : `${days} day(s) early`;
+      return days === 0 ? 'وقت پر مکمل ہوا' : `${days} دن پہلے مکمل`;
     case 'late':
-      return `${days} day(s) late`;
+      return `${days} دن تاخیر سے`;
     default:
       return '-';
   }
@@ -246,11 +262,12 @@ async function buildReportData(requestingUser, filters, { lastUpdateOnly } = {})
   return { groups, lastUpdateOnly: Boolean(lastUpdateOnly) };
 }
 
-// Shared HTML shell — Jameel Noori Nastaleeq is referenced by name (the same font-family the
-// documented frontend setup will use — Frontend Foundation document §7) with real fallbacks; no
-// project currently ships the actual font file (frontend work hasn't started yet — see Phase 8
-// report, section I), so Puppeteer's Chromium falls back to whatever Arabic/Nastaliq-capable
-// font is actually installed in the deployment environment until that asset exists.
+// Shared HTML shell. Prompt — @font-face now embeds the actual Nastaliq font file as a base64
+// data: URI (no network fetch, no disk read at render time — same reasoning as the logo <img>
+// below): a NAMED font-family with no matching @font-face is just a request Chromium is free to
+// ignore, and production evidently had nothing Nastaliq-capable installed to fall back to,
+// dropping/mangling glyphs. This is also why waitUntil:'load' (see generatePdf/generateJpeg) is
+// safe to keep — the font is inlined, not fetched, so there's no extra network wait to add.
 //
 // Prompt — the branded header/table styling below is scoped under `.task-report` on purpose:
 // this shell is shared with renderUserSummaryHtml (a separate, untouched report), and bare
@@ -262,27 +279,43 @@ function htmlDocument(title, bodyHtml) {
 <meta charset="utf-8" />
 <title>${escapeHtml(title)}</title>
 <style>
+  @font-face {
+    font-family: '${NASTALIQ_FONT_NAME}';
+    src: url(data:font/woff2;base64,${NASTALIQ_WOFF2_BASE64}) format('woff2');
+    font-weight: normal;
+    font-style: normal;
+  }
   /* background: #fff is required, not decorative — page.screenshot({type:'jpeg'}) has no alpha
      channel, so an unset (transparent) page background flattens to BLACK in the .jpg export
      specifically (PDF happened to look fine without it; JPEG did not — caught by actually
      opening the generated .jpg, not by reading the HTML/CSS). */
-  body { font-family: 'Jameel Noori Nastaleeq', 'Noto Nastaliq Urdu', 'Noto Sans Arabic', serif; direction: rtl; margin: 24px; background: #fff; }
-  /* Found by zooming into a generated image, not by reading this CSS: whatever Nastaliq/Arabic
-     font this environment actually falls back to (the real Jameel Noori Nastaleeq font isn't
-     shipped yet — see the comment on htmlDocument()) silently drops the space between a digit
-     and the following Latin letter at a <bdi> isolation boundary — "09 Sep 26" rendered as
-     "09Sep 26". <bdi> only ever wraps Latin/numeric data values (dates, code numbers, English
-     names) in this document, never Urdu text, so it's safe — and fixes the spacing — to give it
-     an ordinary Latin font instead of inheriting the Nastaliq stack. */
+  body { font-family: 'Jameel Noori Nastaleeq', '${NASTALIQ_FONT_NAME}', serif; direction: rtl; margin: 24px; background: #fff; }
+  /* Found by zooming into a generated image, not by reading this CSS: the Nastaliq font's own
+     shaping silently drops the space between a digit and the following Latin letter at a <bdi>
+     isolation boundary — "09 Sep 26" rendered as "09Sep 26". <bdi> only ever wraps Latin/numeric
+     data values (dates, code numbers, English names) in this document, never Urdu text, so it's
+     safe — and fixes the spacing — to give it an ordinary Latin font instead. */
   bdi { font-family: Arial, Helvetica, sans-serif; }
   h1 { font-size: 20px; margin-bottom: 4px; }
   p.filter-description { color: #555; margin: 4px 0 16px; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
-  th, td { border: 1px solid #ccc; padding: 6px; text-align: right; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 4px; table-layout: fixed; }
+  th, td { border: 1px solid #ccc; padding: 6px; text-align: right; font-size: 12px; overflow-wrap: break-word; }
   th { background: #eef5ef; }
   h4.updates-heading { font-size: 13px; margin: 4px 0; }
   table.updates-table { margin-bottom: 16px; }
   td.empty-updates { text-align: center; color: #777; }
+
+  /* Prompt — "آخری تاریخ"/"باقی دن" (and Code Number/Date/Completion % elsewhere) are short,
+     fixed-shape system-generated values that should never need two lines; table-layout:fixed
+     above (needed so nth-child widths below are honored at all) otherwise splits width evenly
+     across every column, which was squeezing exactly these into wrapping — caught by looking at
+     a generated image, not by reading the CSS: "10 Sep 26" broke into "10 Sep" / "26". Free-text
+     columns (Task/Description) are deliberately left wrapping — that content is unbounded. */
+  .task-report table.task-header th:nth-child(1), .task-report table.task-header td:nth-child(1) { width: 15%; white-space: nowrap; }
+  .task-report table.task-header th:nth-child(3), .task-report table.task-header td:nth-child(3),
+  .task-report table.task-header th:nth-child(4), .task-report table.task-header td:nth-child(4) { width: 20%; white-space: nowrap; }
+  .task-report table.updates-table th:nth-child(1), .task-report table.updates-table td:nth-child(1),
+  .task-report table.updates-table th:nth-child(4), .task-report table.updates-table td:nth-child(4) { width: 12%; white-space: nowrap; }
 
   .task-report .brand-header { text-align: center; margin-bottom: 12px; }
   .task-report .brand-logo { width: 64px; height: 64px; display: block; margin: 0 auto 8px; }
@@ -291,6 +324,12 @@ function htmlDocument(title, bodyHtml) {
   .task-report .brand-divider { border: none; border-top: 3px solid #${BRAND_GREEN}; margin: 12px 0 16px; }
   .task-report h1.report-title { color: #${BRAND_GREEN}; text-align: center; }
   .task-report h2.assignee-header { font-size: 16px; margin: 20px 0 8px; padding-bottom: 4px; color: #${BRAND_GREEN}; border-bottom: 2px solid #${BRAND_GREEN}; }
+  /* Prompt — a task after the first one in the same Zimmedar section skips its own column-header
+     row entirely (see renderTaskBlockHtml's isFirstInGroup) rather than repeating
+     "کام کوڈ | کام | آخری تاریخ | باقی دن" every time; this rule is what stands in for that
+     missing header visually — a clear top border + extra top margin, so consecutive tasks still
+     read as distinct blocks. */
+  .task-report table.task-header.no-header { margin-top: 14px; border-top: 2px solid #${BRAND_GREEN}; }
   /* th declared AFTER, and deliberately not scoped away from table.task-header: every table
      header row (the 2-row task-header table's own header included) gets the same brand-green
      fill + white text; task-header's own DATA row (below it) keeps its light-gray tint. Caught
@@ -324,15 +363,19 @@ function renderUpdateRowHtml(update) {
 </tr>`;
 }
 
-function renderTaskBlockHtml(task, updates) {
+// Prompt — isFirstInGroup: only the first task in a Zimmedar's section prints the
+// "کام کوڈ | کام | آخری تاریخ | باقی دن" column-header row; every task after it renders just its
+// own data row (the "no-header" class above adds a top border + margin in its place, so
+// consecutive tasks still read as visually distinct blocks without repeating the full header).
+function renderTaskBlockHtml(task, updates, { isFirstInGroup } = {}) {
   const updatesRows =
     updates.length > 0
       ? updates.map((u) => renderUpdateRowHtml(u)).join('')
-      : `<tr><td colspan="${REPORT_COLUMN_COUNT}" class="empty-updates">No updates yet</td></tr>`;
+      : `<tr><td colspan="${REPORT_COLUMN_COUNT}" class="empty-updates">${escapeHtml(EMPTY_UPDATES_TEXT)}</td></tr>`;
 
   return `
-<table class="task-header">
-<thead><tr>${TASK_HEADER_LABELS.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead>
+<table class="task-header${isFirstInGroup ? '' : ' no-header'}">
+${isFirstInGroup ? `<thead><tr>${TASK_HEADER_LABELS.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead>` : ''}
 <tbody><tr>
 <td>${bdi(escapeHtml(task.codeNumber))}</td>
 <td>${bdi(escapeHtml(task.title))}</td>
@@ -350,6 +393,9 @@ function renderTaskBlockHtml(task, updates) {
 // docs/06-backend.md §9 (rewritten) — builds the HTML string rendered by generatePdf/generateJpeg.
 // Prompt — the branded header (logo, app name, "generated by"/"generated at") now sits above the
 // existing title/filter-description block, once per document (not repeated per group/task).
+// filterDescription is only printed when a real filter is active — "All Data" (buildFilterDescription's
+// own fallback for "no filter") added no information once the branded header already existed, so
+// it's omitted entirely rather than printed as a redundant line.
 function renderReportHtml(groups, { headerInfo }) {
   const groupsHtml =
     groups.length > 0
@@ -357,10 +403,13 @@ function renderReportHtml(groups, { headerInfo }) {
           .map(
             (group) => `
 <h2 class="assignee-header">${escapeHtml(ASSIGNEE_LABEL)}: ${bdi(escapeHtml(group.assignee.name))} — ${escapeHtml(RESPONSIBILITY_LABEL)}: ${bdi(escapeHtml(group.assignee.responsibility))}</h2>
-${group.tasks.map(({ task, updates }) => renderTaskBlockHtml(task, updates)).join('')}`
+${group.tasks.map(({ task, updates }, index) => renderTaskBlockHtml(task, updates, { isFirstInGroup: index === 0 })).join('')}`
           )
           .join('')
       : '<p>No tasks found.</p>';
+
+  const filterDescriptionHtml =
+    headerInfo.filterDescription === 'All Data' ? '' : `<p class="filter-description">${bdi(escapeHtml(headerInfo.filterDescription))}</p>`;
 
   const body = `
 <div class="task-report">
@@ -371,8 +420,8 @@ ${group.tasks.map(({ task, updates }) => renderTaskBlockHtml(task, updates)).joi
 <p class="brand-meta">${escapeHtml(GENERATED_AT_LABEL)}: ${bdi(escapeHtml(headerInfo.generatedAtLabel))}</p>
 </div>
 <hr class="brand-divider" />
-<h1 class="report-title">${bdi(escapeHtml(headerInfo.title))}</h1>
-<p class="filter-description">${bdi(escapeHtml(headerInfo.filterDescription))}</p>
+<h1 class="report-title">${escapeHtml(headerInfo.title)}</h1>
+${filterDescriptionHtml}
 ${groupsHtml}
 </div>`;
 
@@ -426,7 +475,18 @@ async function buildUserSummaryData(_requestingUser) {
 // traffic" option) — chosen over a shared long-lived instance to avoid any shared-mutable-state/
 // shutdown-hook lifecycle management; at ~25 users and modest report frequency the ~0.3-1s launch
 // overhead per request is a good trade for simplicity and zero risk of a leaked zombie browser.
-async function withBrowserPage(fn) {
+//
+// Prompt — root-caused from real Render production logs (not a guess): the first export after a
+// cold start failed with "TimeoutError: Navigation timeout of 30000 ms exceeded" inside
+// page.setContent, then succeeded ~1 minute later once the container/Chromium had warmed up.
+// waitUntil:'networkidle0' (the previous setting) waits for zero in-flight network connections
+// for 500ms straight — pointless overhead here, since every resource in this HTML (logo, font,
+// everything) is already inlined as a base64 data: URI with no network fetch at all — and it's
+// also known to be flaky under a slow/CPU-throttled first render, exactly what a cold Render
+// container is. Switched to 'load' (fires once the DOM + inlined resources finish, which is all
+// this document needs) with an explicit, more generous 45s timeout as a safety margin for a
+// still-cold container — both changes target the exact call site the logs pointed at.
+async function withBrowserPage(step, fn) {
   const { default: puppeteer } = await import('puppeteer');
   const launchOptions = {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
@@ -435,7 +495,7 @@ async function withBrowserPage(fn) {
   try {
     browser = await puppeteer.launch(launchOptions);
   } catch (launchError) {
-    logger.error('Puppeteer browser launch failed:', launchError);
+    logger.error(`Puppeteer browser launch failed (report step: ${step}):`, launchError);
     throw launchError;
   }
 
@@ -443,30 +503,30 @@ async function withBrowserPage(fn) {
     const page = await browser.newPage();
     return await fn(page);
   } catch (pageError) {
-    logger.error('Puppeteer report generation failed on page:', pageError);
+    logger.error(`Puppeteer report generation failed on page (report step: ${step}):`, pageError);
     throw pageError;
   } finally {
     if (browser) {
       await browser.close().catch((closeError) => {
-        logger.error('Failed to close Puppeteer browser:', closeError);
+        logger.error(`Failed to close Puppeteer browser (report step: ${step}):`, closeError);
       });
     }
   }
 }
 
 async function generatePdf(html) {
-  return withBrowserPage(async (page) => {
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+  return withBrowserPage('generatePdf', async (page) => {
+    await page.setContent(html, { waitUntil: 'load', timeout: 45000 });
     // page.pdf() resolves a plain Uint8Array, not a Node Buffer — Express's res.send() special-
     // cases Buffer.isBuffer() for correct binary responses (Content-Length etc.), so wrap
     // explicitly rather than let a subtly-wrong type reach the controller.
-    return Buffer.from(await page.pdf({ format: 'A4' }));
+    return Buffer.from(await page.pdf({ format: 'A4', timeout: 45000 }));
   });
 }
 
 async function generateJpeg(html) {
-  return withBrowserPage(async (page) => {
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+  return withBrowserPage('generateJpeg', async (page) => {
+    await page.setContent(html, { waitUntil: 'load', timeout: 45000 });
     // Same Uint8Array-vs-Buffer reasoning as generatePdf above.
     return Buffer.from(await page.screenshot({ type: 'jpeg', fullPage: true }));
   });
@@ -559,7 +619,11 @@ async function generateExcel(data, { headerInfo }) {
   sheet.addRow([]);
 
   addMergedRow(headerInfo.title, { bold: true, color: `FF${BRAND_GREEN}` });
-  addMergedRow(headerInfo.filterDescription);
+  // Prompt — "All Data" (buildFilterDescription's own "nothing was filtered" fallback) is
+  // redundant now that the branded header exists; only a REAL filter description is printed.
+  if (headerInfo.filterDescription !== 'All Data') {
+    addMergedRow(headerInfo.filterDescription);
+  }
   sheet.addRow([]);
 
   if (data.groups.length === 0) {
@@ -572,17 +636,28 @@ async function generateExcel(data, { headerInfo }) {
       color: `FF${BRAND_GREEN}`,
     });
 
-    group.tasks.forEach(({ task, updates }) => {
-      addDataRow(TASK_HEADER_LABELS, { header: true });
-      addDataRow([task.codeNumber, task.title, formatDateShort(task.deadline), formatRemainingDaysLabel(task.timeStatus)], {
+    // Prompt — only the first task in this Zimmedar's section gets the
+    // "کام کوڈ | کام | آخری تاریخ | باقی دن" header row; later tasks skip it and instead get a
+    // thicker top border on their own data row (added below) as a lighter visual separator.
+    group.tasks.forEach(({ task, updates }, index) => {
+      const isFirstInGroup = index === 0;
+      if (isFirstInGroup) {
+        addDataRow(TASK_HEADER_LABELS, { header: true });
+      }
+      const taskRow = addDataRow([task.codeNumber, task.title, formatDateShort(task.deadline), formatRemainingDaysLabel(task.timeStatus)], {
         ltrColumns: [1, 3, 4],
       });
+      if (!isFirstInGroup) {
+        taskRow.eachCell((cell) => {
+          cell.border = { ...cell.border, top: { style: 'medium', color: { argb: `FF${BRAND_GREEN}` } } };
+        });
+      }
 
       addMergedRow(UPDATES_HEADING, { italic: true, color: `FF${BRAND_GREEN}` });
       addDataRow(UPDATE_TABLE_LABELS, { header: true });
 
       if (updates.length === 0) {
-        addMergedRow('No updates yet');
+        addMergedRow(EMPTY_UPDATES_TEXT);
       } else {
         updates.forEach((u) => {
           const row = addDataRow(
@@ -625,12 +700,21 @@ async function generateUserSummaryExcel(rows, { columns }) {
 
 // docs/06-backend.md §9 — Word export (docx package), same grouped-by-Zimmedar structure, same
 // Urdu labels, same brand-green/logo header as every other format.
+//
+// Prompt — every TextRun below carries `font: NASTALIQ_FONT_NAME` explicitly, rather than
+// relying on Word's own style-inheritance cascade (styles.default.document/heading1/heading2/...)
+// to pick it up: Word's built-in heading styles pull their font from the document THEME by
+// default, which can silently override a font set only at the "Normal"/document-default level —
+// setting it per-run is the only way to GUARANTEE every visible piece of text actually uses the
+// embedded font (see generateDocx's `fonts:` option below for the embedding itself, which is the
+// other half of this fix: setting a font NAME with nothing backing it does nothing for a viewer
+// who doesn't have that font installed).
 function docxCell(text, { bold = false, header = false } = {}) {
   return new TableCell({
     children: [
       new Paragraph({
         bidirectional: true,
-        children: [new TextRun({ text: String(text ?? '-'), bold: bold || header, color: header ? 'FFFFFF' : undefined })],
+        children: [new TextRun({ text: String(text ?? '-'), bold: bold || header, color: header ? 'FFFFFF' : undefined, font: NASTALIQ_FONT_NAME })],
       }),
     ],
     shading: header ? { fill: BRAND_GREEN } : undefined,
@@ -643,26 +727,36 @@ function docxAttachmentCell(attachment) {
     children: [
       new Paragraph({
         bidirectional: true,
-        children: [new ExternalHyperlink({ link: attachment.url, children: [new TextRun({ text: attachment.fileName || 'Attachment', style: 'Hyperlink' })] })],
+        children: [
+          new ExternalHyperlink({
+            link: attachment.url,
+            children: [new TextRun({ text: attachment.fileName || 'Attachment', style: 'Hyperlink', font: NASTALIQ_FONT_NAME })],
+          }),
+        ],
       }),
     ],
   });
 }
 
-function docxTaskHeaderTable(task) {
+// Prompt — isFirstInGroup mirrors the HTML/Excel de-dup: only the first task in a Zimmedar's
+// section gets the "کام کوڈ | کام | آخری تاریخ | باقی دن" header row; later tasks are a
+// header-less, single-row table with a thicker brand-green top border standing in for the
+// missing header, so consecutive tasks still read as visually distinct blocks.
+function docxTaskHeaderTable(task, { isFirstInGroup } = {}) {
+  const dataRow = new TableRow({
+    children: [
+      docxCell(task.codeNumber),
+      docxCell(task.title),
+      docxCell(formatDateShort(task.deadline)),
+      docxCell(formatRemainingDaysLabel(task.timeStatus)),
+    ],
+  });
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
-    rows: [
-      new TableRow({ children: TASK_HEADER_LABELS.map((l) => docxCell(l, { header: true })) }),
-      new TableRow({
-        children: [
-          docxCell(task.codeNumber),
-          docxCell(task.title),
-          docxCell(formatDateShort(task.deadline)),
-          docxCell(formatRemainingDaysLabel(task.timeStatus)),
-        ],
-      }),
-    ],
+    // A header-less table is only ever a single row, so this top border doubles as the visual
+    // separator standing in for the header it's skipping.
+    borders: isFirstInGroup ? undefined : { top: { style: BorderStyle.SINGLE, size: 18, color: BRAND_GREEN } },
+    rows: isFirstInGroup ? [new TableRow({ children: TASK_HEADER_LABELS.map((l) => docxCell(l, { header: true })) }), dataRow] : [dataRow],
   });
 }
 
@@ -678,7 +772,13 @@ function docxUpdatesTable(updates) {
           children: [
             new TableCell({
               columnSpan: REPORT_COLUMN_COUNT,
-              children: [new Paragraph({ bidirectional: true, alignment: AlignmentType.CENTER, children: [new TextRun('No updates yet')] })],
+              children: [
+                new Paragraph({
+                  bidirectional: true,
+                  alignment: AlignmentType.CENTER,
+                  children: [new TextRun({ text: EMPTY_UPDATES_TEXT, font: NASTALIQ_FONT_NAME })],
+                }),
+              ],
             }),
           ],
         }),
@@ -702,8 +802,10 @@ function docxUpdatesTable(updates) {
   return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...dataRows] });
 }
 
+// Prompt — filterDescription paragraph omitted entirely when it's just "All Data" (no filter
+// applied) — redundant once the branded header above it already exists.
 function docxBrandHeaderParagraphs(headerInfo) {
-  return [
+  const paragraphs = [
     new Paragraph({
       alignment: AlignmentType.CENTER,
       children: [new ImageRun({ type: 'png', data: LOGO_BUFFER, transformation: { width: 56, height: 56 } })],
@@ -711,17 +813,17 @@ function docxBrandHeaderParagraphs(headerInfo) {
     new Paragraph({
       alignment: AlignmentType.CENTER,
       bidirectional: true,
-      children: [new TextRun({ text: BRAND_TITLE, bold: true, size: 32, color: BRAND_GREEN })],
+      children: [new TextRun({ text: BRAND_TITLE, bold: true, size: 32, color: BRAND_GREEN, font: NASTALIQ_FONT_NAME })],
     }),
     new Paragraph({
       alignment: AlignmentType.CENTER,
       bidirectional: true,
-      children: [new TextRun({ text: `${GENERATED_BY_LABEL}: ${headerInfo.generatedByLine}`, size: 20 })],
+      children: [new TextRun({ text: `${GENERATED_BY_LABEL}: ${headerInfo.generatedByLine}`, size: 20, font: NASTALIQ_FONT_NAME })],
     }),
     new Paragraph({
       alignment: AlignmentType.CENTER,
       bidirectional: true,
-      children: [new TextRun({ text: `${GENERATED_AT_LABEL}: ${headerInfo.generatedAtLabel}`, size: 20 })],
+      children: [new TextRun({ text: `${GENERATED_AT_LABEL}: ${headerInfo.generatedAtLabel}`, size: 20, font: NASTALIQ_FONT_NAME })],
     }),
     new Paragraph({
       border: { bottom: { color: BRAND_GREEN, space: 4, style: BorderStyle.SINGLE, size: 12 } },
@@ -731,17 +833,26 @@ function docxBrandHeaderParagraphs(headerInfo) {
       heading: HeadingLevel.HEADING_1,
       alignment: AlignmentType.CENTER,
       bidirectional: true,
-      children: [new TextRun({ text: headerInfo.title, color: BRAND_GREEN })],
+      children: [new TextRun({ text: headerInfo.title, color: BRAND_GREEN, font: NASTALIQ_FONT_NAME })],
     }),
-    new Paragraph({ alignment: AlignmentType.CENTER, bidirectional: true, children: [new TextRun(headerInfo.filterDescription)] }),
   ];
+  if (headerInfo.filterDescription !== 'All Data') {
+    paragraphs.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        bidirectional: true,
+        children: [new TextRun({ text: headerInfo.filterDescription, font: NASTALIQ_FONT_NAME })],
+      })
+    );
+  }
+  return paragraphs;
 }
 
 async function generateDocx(data, { headerInfo }) {
   const children = docxBrandHeaderParagraphs(headerInfo);
 
   if (data.groups.length === 0) {
-    children.push(new Paragraph({ bidirectional: true, children: [new TextRun('No tasks found.')] }));
+    children.push(new Paragraph({ bidirectional: true, children: [new TextRun({ text: 'No tasks found.', font: NASTALIQ_FONT_NAME })] }));
   }
 
   data.groups.forEach((group) => {
@@ -754,18 +865,19 @@ async function generateDocx(data, { headerInfo }) {
             text: `${ASSIGNEE_LABEL}: ${group.assignee.name} — ${RESPONSIBILITY_LABEL}: ${group.assignee.responsibility}`,
             color: BRAND_GREEN,
             bold: true,
+            font: NASTALIQ_FONT_NAME,
           }),
         ],
       })
     );
 
-    group.tasks.forEach(({ task, updates }) => {
-      children.push(docxTaskHeaderTable(task));
+    group.tasks.forEach(({ task, updates }, index) => {
+      children.push(docxTaskHeaderTable(task, { isFirstInGroup: index === 0 }));
       children.push(
         new Paragraph({
           heading: HeadingLevel.HEADING_4,
           bidirectional: true,
-          children: [new TextRun({ text: UPDATES_HEADING, color: BRAND_GREEN, bold: true })],
+          children: [new TextRun({ text: UPDATES_HEADING, color: BRAND_GREEN, bold: true, font: NASTALIQ_FONT_NAME })],
         })
       );
       children.push(docxUpdatesTable(updates));
@@ -773,7 +885,15 @@ async function generateDocx(data, { headerInfo }) {
     });
   });
 
-  const doc = new Document({ sections: [{ children }] });
+  // Prompt — embeds the actual font FILE in the .docx (Word's own "embed fonts in the file"
+  // mechanism, exposed here via docx's `fonts` option): setting `font: NASTALIQ_FONT_NAME` on
+  // every run above only sets a NAME — if the viewer's own Windows/Office install doesn't have
+  // that family, Word silently substitutes something else and the text can render wrong, which
+  // is exactly the bug being fixed here.
+  const doc = new Document({
+    fonts: [{ name: NASTALIQ_FONT_NAME, data: NASTALIQ_TTF_BUFFER }],
+    sections: [{ children }],
+  });
   return Packer.toBuffer(doc);
 }
 

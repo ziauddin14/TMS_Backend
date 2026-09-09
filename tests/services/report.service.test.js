@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const ExcelJS = require('exceljs');
+const JSZip = require('jszip');
 const { Document, Packer } = require('docx');
 const { connect, closeDatabase, clearDatabase } = require('../helpers/db');
 const User = require('../../src/models/User');
@@ -40,7 +41,7 @@ function inDays(n) {
 describe('buildHeaderInfo / buildFilterDescription (docs/06-backend.md §9 header wording)', () => {
   it('shows "All Data" when no filter was applied', () => {
     const info = reportService.buildHeaderInfo({ name: 'Admin Person', responsibility: 'Admin' }, {});
-    expect(info.title).toBe('Task Report');
+    expect(info.title).toBe('ٹاسک رپورٹ'); // Prompt — was English "Task Report"
     expect(info.filterDescription).toBe('All Data');
   });
 
@@ -69,14 +70,14 @@ describe('buildHeaderInfo / buildFilterDescription (docs/06-backend.md §9 heade
   });
 });
 
-describe('formatRemainingDaysLabel (pure)', () => {
-  it('describes each timeStatus type in words', () => {
-    expect(reportService.formatRemainingDaysLabel({ type: 'remaining', days: 3 })).toBe('3 day(s) remaining');
-    expect(reportService.formatRemainingDaysLabel({ type: 'remaining', days: 0 })).toBe('Due today');
-    expect(reportService.formatRemainingDaysLabel({ type: 'overdue', days: 2 })).toBe('2 day(s) overdue');
-    expect(reportService.formatRemainingDaysLabel({ type: 'early', days: 1 })).toBe('1 day(s) early');
-    expect(reportService.formatRemainingDaysLabel({ type: 'early', days: 0 })).toBe('Completed on time');
-    expect(reportService.formatRemainingDaysLabel({ type: 'late', days: 4 })).toBe('4 day(s) late');
+describe('formatRemainingDaysLabel (pure, Urdu — Prompt: converted from English)', () => {
+  it('uses the client\'s exact given strings for remaining/early, and the frontend\'s own established wording for overdue/late/edge-cases', () => {
+    expect(reportService.formatRemainingDaysLabel({ type: 'remaining', days: 3 })).toBe('3 دن باقی');
+    expect(reportService.formatRemainingDaysLabel({ type: 'remaining', days: 0 })).toBe('آج آخری تاریخ ہے');
+    expect(reportService.formatRemainingDaysLabel({ type: 'overdue', days: 2 })).toBe('2 دن تاخیر سے');
+    expect(reportService.formatRemainingDaysLabel({ type: 'early', days: 1 })).toBe('1 دن پہلے مکمل');
+    expect(reportService.formatRemainingDaysLabel({ type: 'early', days: 0 })).toBe('وقت پر مکمل ہوا');
+    expect(reportService.formatRemainingDaysLabel({ type: 'late', days: 4 })).toBe('4 دن تاخیر سے');
     expect(reportService.formatRemainingDaysLabel(null)).toBe('-');
   });
 });
@@ -229,7 +230,7 @@ describe('buildReportData (docs/06-backend.md §9 step 1, rewritten: grouped by 
 });
 
 const SAMPLE_HEADER_INFO = {
-  title: 'Task Report',
+  title: 'ٹاسک رپورٹ',
   filterDescription: 'All Data',
   generatedByLine: 'Admin Person (Admin)',
   generatedAtLabel: '09 Sep 26',
@@ -282,7 +283,7 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
     ['تاریخ', 'رپلائی کرنے والا', 'وضاحت', 'تکمیل فیصد', 'اٹیچمنٹ'].forEach((label) => expect(html).toContain(label));
   });
 
-  it('shows "No updates yet" for a task with an empty updates array', () => {
+  it('shows "کوئی اپڈیٹ نہیں" (Prompt — was English "No updates yet") for a task with an empty updates array', () => {
     const groups = [
       {
         assignee: { id: 'u1', name: 'Ali', responsibility: 'IT' },
@@ -290,12 +291,56 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
       },
     ];
     const html = reportService.renderReportHtml(groups, { headerInfo: SAMPLE_HEADER_INFO });
-    expect(html).toContain('No updates yet');
+    expect(html).toContain('کوئی اپڈیٹ نہیں');
   });
 
   it('shows "No tasks found." when there are zero groups', () => {
     const html = reportService.renderReportHtml([], { headerInfo: SAMPLE_HEADER_INFO });
     expect(html).toContain('No tasks found.');
+  });
+
+  it('embeds the real Nastaliq font via @font-face as a base64 data: URI (no network fetch, no reliance on a viewer/server having it installed)', () => {
+    const html = reportService.renderReportHtml([], { headerInfo: SAMPLE_HEADER_INFO });
+    expect(html).toContain('@font-face');
+    expect(html).toContain("font-family: 'Noto Nastaliq Urdu'");
+    expect(html).toContain('data:font/woff2;base64,');
+  });
+
+  it('prints the column-header row ("کام کوڈ | کام | آخری تاریخ | باقی دن") only for the FIRST task in a Zimmedar section, not repeated for every task', () => {
+    const group = {
+      assignee: { id: 'u1', name: 'Ali', responsibility: 'IT' },
+      tasks: [
+        { task: { codeNumber: '1', title: 'First', deadline: new Date(), timeStatus: { type: 'remaining', days: 1 } }, updates: [] },
+        { task: { codeNumber: '2', title: 'Second', deadline: new Date(), timeStatus: { type: 'remaining', days: 1 } }, updates: [] },
+        { task: { codeNumber: '3', title: 'Third', deadline: new Date(), timeStatus: { type: 'remaining', days: 1 } }, updates: [] },
+      ],
+    };
+    const html = reportService.renderReportHtml([group], { headerInfo: SAMPLE_HEADER_INFO });
+    const bodyHtml = html.slice(html.indexOf('<body>')); // exclude the <style> block, which has its own explanatory comment mentioning this label
+
+    // The column header text appears exactly once per label (only the first task's table has a
+    // <thead>), even though there are 3 tasks.
+    const codeHeaderOccurrences = bodyHtml.split('کام کوڈ').length - 1;
+    expect(codeHeaderOccurrences).toBe(1);
+    // But every task's own data still renders.
+    expect(html).toContain('<bdi>1</bdi>');
+    expect(html).toContain('<bdi>2</bdi>');
+    expect(html).toContain('<bdi>3</bdi>');
+    // Later tasks get the no-header/visual-separator class instead of a repeated <thead>.
+    expect(html).toContain('task-header no-header');
+  });
+
+  it('omits the filter-description line entirely when there is nothing to say ("All Data"), but shows a real one when a filter is active', () => {
+    const htmlNoFilter = reportService.renderReportHtml([], { headerInfo: SAMPLE_HEADER_INFO });
+    // The CSS rule `p.filter-description {...}` is always present in <style> — check for the
+    // actual rendered ELEMENT, not just the class name appearing anywhere in the document.
+    expect(htmlNoFilter).not.toContain('<p class="filter-description">');
+
+    const htmlWithFilter = reportService.renderReportHtml([], {
+      headerInfo: { ...SAMPLE_HEADER_INFO, filterDescription: 'Status: Ongoing' },
+    });
+    expect(htmlWithFilter).toContain('<p class="filter-description">');
+    expect(htmlWithFilter).toContain('Status: Ongoing');
   });
 
   it('the brand-green color (#1F6F3F) is applied to headings/dividers/table headers, scoped so it never touches the separate user-summary report', () => {
@@ -404,7 +449,7 @@ describe('generateExcel (exceljs, real generation, rewritten grouped structure)'
     const joined = allText.join(' | ');
     expect(joined).toContain('ٹاسک مینجمنٹ سسٹم');
     expect(joined).toContain(`${admin.name} (${admin.responsibility})`);
-    expect(joined).toContain('Task Report');
+    expect(joined).toContain('ٹاسک رپورٹ'); // Prompt — was English "Task Report"
     expect(joined).toContain('Ali');
     expect(joined).toContain('Collect boxes');
     expect(joined).toContain('اپڈیٹس');
@@ -419,6 +464,41 @@ describe('generateExcel (exceljs, real generation, rewritten grouped structure)'
       .getRows(1, sheet.rowCount)
       .find((row) => row.getCell(1).value === 'کام کوڈ');
     expect(headerCandidateRow.getCell(1).fill.fgColor.argb).toBe('FF1F6F3F');
+  });
+
+  it('"All Data" (no filter) is NOT printed as its own redundant line', async () => {
+    const admin = await makeAdmin();
+    const data = { groups: [] };
+    const headerInfo = reportService.buildHeaderInfo({ id: admin.id, name: admin.name, responsibility: admin.responsibility }, {});
+    expect(headerInfo.filterDescription).toBe('All Data');
+
+    const buffer = await reportService.generateExcel(data, { headerInfo });
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
+    const allText = [];
+    workbook.worksheets[0].eachRow((row) => row.eachCell((cell) => allText.push(String(cell.value?.text ?? cell.value ?? ''))));
+    expect(allText).not.toContain('All Data');
+  });
+
+  it('prints "کام کوڈ" only once for a Zimmedar with multiple tasks — later tasks skip the repeated header row', async () => {
+    const admin = await makeAdmin();
+    const assignee = await makeUser({ name: 'Ali' });
+    const lookup = await makeLookup();
+    await taskService.createTask({ id: admin.id }, { title: 'First', assignees: [assignee._id], responsibility: lookup.value, deadline: inDays(5) });
+    await taskService.createTask({ id: admin.id }, { title: 'Second', assignees: [assignee._id], responsibility: lookup.value, deadline: inDays(5) });
+    const data = await reportService.buildReportData({ id: admin.id, role: 'admin' }, {}, {});
+    const headerInfo = reportService.buildHeaderInfo({ id: admin.id, name: admin.name, responsibility: admin.responsibility }, {});
+
+    const buffer = await reportService.generateExcel(data, { headerInfo });
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
+    const allText = [];
+    workbook.worksheets[0].eachRow((row) => row.eachCell((cell) => allText.push(String(cell.value?.text ?? cell.value ?? ''))));
+
+    const codeHeaderOccurrences = allText.filter((v) => v === 'کام کوڈ').length;
+    expect(codeHeaderOccurrences).toBe(1);
+    expect(allText).toContain('First');
+    expect(allText).toContain('Second');
   });
 
   it('generateUserSummaryExcel produces a non-empty .xlsx with rightToLeft view (untouched by the rewrite)', async () => {
@@ -458,6 +538,57 @@ describe('generateDocx (docx package, real generation)', () => {
   it('handles zero groups without throwing (an empty Document/Packer round-trip still works)', async () => {
     const buffer = await reportService.generateDocx({ groups: [] }, { headerInfo: SAMPLE_HEADER_INFO });
     expect(buffer.length).toBeGreaterThan(0);
+  });
+
+  // Prompt — "setting the font NAME only does nothing for a viewer without it installed; the
+  // font file must be EMBEDDED in the .docx itself." Verified by actually unzipping the
+  // generated file (a .docx is a zip/OOXML package) and checking for the real embedded-fonts
+  // relationship, not just trusting that passing `fonts:` to Document did something.
+  it('genuinely embeds the Nastaliq font file in the .docx (not just a font-name reference)', async () => {
+    const buffer = await reportService.generateDocx({ groups: [] }, { headerInfo: SAMPLE_HEADER_INFO });
+    const zip = await JSZip.loadAsync(buffer);
+
+    const fontTableXml = await zip.file('word/fontTable.xml')?.async('string');
+    expect(fontTableXml).toBeTruthy();
+    expect(fontTableXml).toContain('Noto Nastaliq Urdu');
+    expect(fontTableXml).toContain('embedRegular');
+
+    const embeddedFontFiles = Object.keys(zip.files).filter((name) => name.startsWith('word/fonts/'));
+    expect(embeddedFontFiles.length).toBeGreaterThan(0);
+  });
+
+  it('prints "کام کوڈ" only once for a Zimmedar with multiple tasks — later tasks skip the repeated header row', async () => {
+    const admin = await makeAdmin();
+    const assignee = await makeUser({ name: 'Ali' });
+    const lookup = await makeLookup();
+    await taskService.createTask({ id: admin.id }, { title: 'First', assignees: [assignee._id], responsibility: lookup.value, deadline: inDays(5) });
+    await taskService.createTask({ id: admin.id }, { title: 'Second', assignees: [assignee._id], responsibility: lookup.value, deadline: inDays(5) });
+    const data = await reportService.buildReportData({ id: admin.id, role: 'admin' }, {}, {});
+    const headerInfo = reportService.buildHeaderInfo({ id: admin.id, name: admin.name, responsibility: admin.responsibility }, {});
+
+    const buffer = await reportService.generateDocx(data, { headerInfo });
+    const zip = await JSZip.loadAsync(buffer);
+    const documentXml = await zip.file('word/document.xml').async('string');
+
+    const codeHeaderOccurrences = documentXml.split('کام کوڈ').length - 1;
+    expect(codeHeaderOccurrences).toBe(1);
+    expect(documentXml).toContain('First');
+    expect(documentXml).toContain('Second');
+  });
+
+  it('shows "کوئی اپڈیٹ نہیں" (Prompt — was English "No updates yet") for a task with no updates', async () => {
+    const admin = await makeAdmin();
+    const assignee = await makeUser();
+    const lookup = await makeLookup();
+    await taskService.createTask({ id: admin.id }, { title: 'X', assignees: [assignee._id], responsibility: lookup.value, deadline: inDays(5) });
+    const data = await reportService.buildReportData({ id: admin.id, role: 'admin' }, {}, {});
+    const headerInfo = reportService.buildHeaderInfo({ id: admin.id, name: admin.name, responsibility: admin.responsibility }, {});
+
+    const buffer = await reportService.generateDocx(data, { headerInfo });
+    const zip = await JSZip.loadAsync(buffer);
+    const documentXml = await zip.file('word/document.xml').async('string');
+
+    expect(documentXml).toContain('کوئی اپڈیٹ نہیں');
   });
 });
 
