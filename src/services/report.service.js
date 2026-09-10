@@ -55,6 +55,20 @@ const NASTALIQ_FONT_NAME = 'Noto Nastaliq Urdu';
 const NASTALIQ_WOFF2_BASE64 = fs.readFileSync(path.join(__dirname, '../assets/fonts/NotoNastaliqUrdu-Regular.woff2')).toString('base64');
 const NASTALIQ_TTF_BUFFER = fs.readFileSync(path.join(__dirname, '../assets/fonts/NotoNastaliqUrdu-Regular.ttf'));
 
+// Prompt — PDF/JPEG font-consistency fix: the HTML shell used to list `'Jameel Noori Nastaleeq'`
+// FIRST in the CSS font-family stack, ahead of the actually-embedded `${NASTALIQ_FONT_NAME}`
+// (Noto Nastaliq Urdu) @font-face. That name has no @font-face of its own and isn't installed on
+// Render's container — a font-family entry with nothing backing it is exactly the kind of thing
+// that lets Chromium's (Linux/fontconfig) font matcher substitute an unrelated system font for
+// SOME glyphs/elements rather than reliably falling through to the next stack entry, which is
+// what actually produced the reported inconsistent font/boxes, not a wrong font NAME per se. Fix:
+// the embedded font is @font-face'd directly UNDER the name 'Jameel Noori Nastaleeq' (same file,
+// just aliased), so every CSS reference to that name resolves deterministically to our own
+// embedded data — no name in the stack is ever left unbacked. Scoped to the HTML/PDF/JPEG path
+// only (htmlDocument below); the separate DOCX/XLSX pipelines were not reported broken and keep
+// using NASTALIQ_FONT_NAME/NotoNastaliqUrdu unchanged.
+const PDF_FONT_DISPLAY_NAME = 'Jameel Noori Nastaleeq';
+
 const USER_SUMMARY_COLUMNS = ['name', 'responsibility', 'ongoing', 'pending', 'complete', 'closed', 'excellent', 'good', 'fair', 'weak', 'notApplicable', 'total'];
 const USER_SUMMARY_COLUMN_LABELS = {
   name: 'Name',
@@ -262,12 +276,16 @@ async function buildReportData(requestingUser, filters, { lastUpdateOnly } = {})
   return { groups, lastUpdateOnly: Boolean(lastUpdateOnly) };
 }
 
-// Shared HTML shell. Prompt — @font-face now embeds the actual Nastaliq font file as a base64
-// data: URI (no network fetch, no disk read at render time — same reasoning as the logo <img>
-// below): a NAMED font-family with no matching @font-face is just a request Chromium is free to
-// ignore, and production evidently had nothing Nastaliq-capable installed to fall back to,
-// dropping/mangling glyphs. This is also why waitUntil:'load' (see generatePdf/generateJpeg) is
-// safe to keep — the font is inlined, not fetched, so there's no extra network wait to add.
+// Shared HTML shell. Prompt — @font-face embeds the actual Nastaliq font file as a base64 data:
+// URI (no network fetch, no disk read at render time — same reasoning as the logo <img> below),
+// aliased directly under the name 'Jameel Noori Nastaleeq' (PDF_FONT_DISPLAY_NAME — see its own
+// comment above) so every Urdu element resolves to this ONE embedded face deterministically; there
+// is no longer a second/fallback name in the stack for Chromium's font matcher to substitute
+// something else for. waitUntil:'load' (see generatePdf/generateJpeg) stays fine for the same
+// reason as before — the font is inlined, not fetched — but generatePdf/generateJpeg now also
+// explicitly await `document.fonts.ready` before capturing, since 'load' firing is not the same
+// guarantee as the @font-face's glyph data having actually finished decoding — see those
+// functions' own comments.
 //
 // Prompt — the branded header/table styling below is scoped under `.task-report` on purpose:
 // this shell is shared with renderUserSummaryHtml (a separate, untouched report), and bare
@@ -280,7 +298,7 @@ function htmlDocument(title, bodyHtml) {
 <title>${escapeHtml(title)}</title>
 <style>
   @font-face {
-    font-family: '${NASTALIQ_FONT_NAME}';
+    font-family: '${PDF_FONT_DISPLAY_NAME}';
     src: url(data:font/woff2;base64,${NASTALIQ_WOFF2_BASE64}) format('woff2');
     font-weight: normal;
     font-style: normal;
@@ -288,18 +306,26 @@ function htmlDocument(title, bodyHtml) {
   /* background: #fff is required, not decorative — page.screenshot({type:'jpeg'}) has no alpha
      channel, so an unset (transparent) page background flattens to BLACK in the .jpg export
      specifically (PDF happened to look fine without it; JPEG did not — caught by actually
-     opening the generated .jpg, not by reading the HTML/CSS). */
-  body { font-family: 'Jameel Noori Nastaleeq', '${NASTALIQ_FONT_NAME}', serif; direction: rtl; margin: 24px; background: #fff; }
+     opening the generated .jpg, not by reading the HTML/CSS).
+     line-height: 2 — Nastaliq's diagonal, stacked letterforms need noticeably more vertical room
+     than Naskh/Latin text at the same font-size or ascenders/descenders from adjacent lines visibly
+     crowd each other (caught by zooming into a generated PDF, not by reading this CSS); this is a
+     line-height fix, not a font-size one — font-size stays untouched everywhere in this document. */
+  body { font-family: '${PDF_FONT_DISPLAY_NAME}', serif; direction: rtl; margin: 24px; background: #fff; line-height: 2; }
   /* Found by zooming into a generated image, not by reading this CSS: the Nastaliq font's own
      shaping silently drops the space between a digit and the following Latin letter at a <bdi>
      isolation boundary — "09 Sep 26" rendered as "09Sep 26". <bdi> only ever wraps Latin/numeric
      data values (dates, code numbers, English names) in this document, never Urdu text, so it's
      safe — and fixes the spacing — to give it an ordinary Latin font instead. */
-  bdi { font-family: Arial, Helvetica, sans-serif; }
+  bdi { font-family: Arial, Helvetica, sans-serif; line-height: normal; }
   h1 { font-size: 20px; margin-bottom: 4px; }
   p.filter-description { color: #555; margin: 4px 0 16px; }
   table { width: 100%; border-collapse: collapse; margin-bottom: 4px; table-layout: fixed; }
-  th, td { border: 1px solid #ccc; padding: 6px; text-align: right; font-size: 12px; overflow-wrap: break-word; }
+  /* height: auto (explicit, not just the default) — table-layout:fixed only fixes COLUMN widths;
+     rows already grow with their content by default, this just documents that no fixed/max-height
+     is meant to ever be added here for text-heavy cells (Task/Description), per the client's own
+     "allow the row height to expand naturally" requirement. */
+  th, td { border: 1px solid #ccc; padding: 8px 6px; text-align: right; font-size: 12px; line-height: 2; height: auto; overflow-wrap: break-word; word-break: break-word; }
   th { background: #eef5ef; }
   h4.updates-heading { font-size: 13px; margin: 4px 0; }
   table.updates-table { margin-bottom: 16px; }
@@ -514,9 +540,27 @@ async function withBrowserPage(step, fn) {
   }
 }
 
+// Prompt — root-caused the "inconsistent Urdu font/boxes in the PDF" report: waitUntil:'load'
+// firing (page.setContent resolving) is NOT the same guarantee as the @font-face's embedded glyph
+// data having actually finished decoding — Chromium can still paint a first frame with its own
+// fallback font while the real one is mid-decode, and page.pdf()/page.screenshot() capture
+// whatever was painted at that moment. The CSS Font Loading API's `document.fonts.ready` is the
+// actual, deterministic signal for "every font this page needs has settled" (it resolves once
+// loading finishes either way, so it can't hang forever on a font that fails) — awaited here
+// before every capture. Raced against a short explicit timeout anyway, matching this file's
+// existing explicit-timeout convention, purely as a last-resort safety net.
+async function waitForFontsReady(page) {
+  await Promise.race([
+    // eslint-disable-next-line no-undef -- runs inside the Puppeteer page (browser context), not Node.
+    page.evaluate(() => document.fonts.ready.then(() => undefined)),
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
+}
+
 async function generatePdf(html) {
   return withBrowserPage('generatePdf', async (page) => {
     await page.setContent(html, { waitUntil: 'load', timeout: 45000 });
+    await waitForFontsReady(page);
     // page.pdf() resolves a plain Uint8Array, not a Node Buffer — Express's res.send() special-
     // cases Buffer.isBuffer() for correct binary responses (Content-Length etc.), so wrap
     // explicitly rather than let a subtly-wrong type reach the controller.
@@ -527,6 +571,7 @@ async function generatePdf(html) {
 async function generateJpeg(html) {
   return withBrowserPage('generateJpeg', async (page) => {
     await page.setContent(html, { waitUntil: 'load', timeout: 45000 });
+    await waitForFontsReady(page);
     // Same Uint8Array-vs-Buffer reasoning as generatePdf above.
     return Buffer.from(await page.screenshot({ type: 'jpeg', fullPage: true }));
   });

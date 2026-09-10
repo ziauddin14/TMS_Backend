@@ -302,8 +302,20 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
   it('embeds the real Nastaliq font via @font-face as a base64 data: URI (no network fetch, no reliance on a viewer/server having it installed)', () => {
     const html = reportService.renderReportHtml([], { headerInfo: SAMPLE_HEADER_INFO });
     expect(html).toContain('@font-face');
-    expect(html).toContain("font-family: 'Noto Nastaliq Urdu'");
+    expect(html).toContain("font-family: 'Jameel Noori Nastaleeq'");
     expect(html).toContain('data:font/woff2;base64,');
+  });
+
+  // Prompt — the reported "inconsistent font / boxes in the PDF" bug traced back to the body's
+  // font-family stack naming 'Jameel Noori Nastaleeq' with no @font-face backing it (a separate,
+  // actually-embedded 'Noto Nastaliq Urdu' face came second) — an unbacked name in the stack is
+  // exactly what let Chromium's font matcher substitute something else for some glyphs/elements.
+  // The fix aliases the ONE embedded face directly under 'Jameel Noori Nastaleeq', so body must
+  // reference that same name and nothing else — no second/fallback Nastaliq name left in the mix.
+  it('applies the SAME embedded font name consistently — body never falls back to a second, unbacked Nastaliq name', () => {
+    const html = reportService.renderReportHtml([], { headerInfo: SAMPLE_HEADER_INFO });
+    expect(html).toMatch(/body\s*\{[^}]*font-family:\s*'Jameel Noori Nastaleeq',\s*serif/);
+    expect(html).not.toContain('Noto Nastaliq Urdu');
   });
 
   it('prints the column-header row ("کام کوڈ | کام | آخری تاریخ | باقی دن") only for the FIRST task in a Zimmedar section, not repeated for every task', () => {
