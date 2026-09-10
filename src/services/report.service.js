@@ -211,6 +211,18 @@ function attachmentLabel(attachment) {
   return attachment.fileName || attachment.url || '-';
 }
 
+// Prompt — purely a REPORT-DISPLAY convenience: "(01) Title", "(02) Title", ... in front of a
+// task's title, only when its ذمہ دار has more than one task in this report (a single-task
+// section gets no "(01)" at all, per the client's own example). Never touches task.title or
+// task.codeNumber themselves, never re-sorts anything — indexInGroup is just this task's existing
+// position within its group's already-built tasks array (whatever order groupTasksByAssignee
+// already produced).
+function formatTaskTitleForDisplay(title, indexInGroup, groupTaskCount) {
+  if (groupTaskCount <= 1) return title;
+  const serial = String(indexInGroup + 1).padStart(2, '0');
+  return `(${serial}) ${title}`;
+}
+
 // docs/06-backend.md §9 (rewritten) — one section per Zimmedar (name + their OWN
 // User.responsibility, not the task's own responsibility field — that field described the task's
 // department/category at creation time and isn't repeated here now that tasks are grouped by
@@ -350,12 +362,11 @@ function htmlDocument(title, bodyHtml) {
   .task-report .brand-divider { border: none; border-top: 3px solid #${BRAND_GREEN}; margin: 12px 0 16px; }
   .task-report h1.report-title { color: #${BRAND_GREEN}; text-align: center; }
   .task-report h2.assignee-header { font-size: 16px; margin: 20px 0 8px; padding-bottom: 4px; color: #${BRAND_GREEN}; border-bottom: 2px solid #${BRAND_GREEN}; }
-  /* Prompt — a task after the first one in the same Zimmedar section skips its own column-header
-     row entirely (see renderTaskBlockHtml's isFirstInGroup) rather than repeating
-     "کام کوڈ | کام | آخری تاریخ | باقی دن" every time; this rule is what stands in for that
-     missing header visually — a clear top border + extra top margin, so consecutive tasks still
-     read as distinct blocks. */
-  .task-report table.task-header.no-header { margin-top: 14px; border-top: 2px solid #${BRAND_GREEN}; }
+  /* Prompt — every task now prints its own "کام کوڈ | کام | آخری تاریخ | باقی دن" header row (see
+     renderTaskBlockHtml), so every task-header table gets the same top spacing — not just tasks
+     after the first — to keep consistent breathing room from whatever precedes it (the ذمہ دار
+     heading, or the previous task's Updates table). */
+  .task-report table.task-header { margin-top: 14px; }
   /* th declared AFTER, and deliberately not scoped away from table.task-header: every table
      header row (the 2-row task-header table's own header included) gets the same brand-green
      fill + white text; task-header's own DATA row (below it) keeps its light-gray tint. Caught
@@ -389,22 +400,26 @@ function renderUpdateRowHtml(update) {
 </tr>`;
 }
 
-// Prompt — isFirstInGroup: only the first task in a Zimmedar's section prints the
-// "کام کوڈ | کام | آخری تاریخ | باقی دن" column-header row; every task after it renders just its
-// own data row (the "no-header" class above adds a top border + margin in its place, so
-// consecutive tasks still read as visually distinct blocks without repeating the full header).
-function renderTaskBlockHtml(task, updates, { isFirstInGroup } = {}) {
+// Prompt — every task in a Zimmedar's section now prints its OWN
+// "کام کوڈ | کام | آخری تاریخ | باقی دن" column-header row (previously only the first task in a
+// group did, with later tasks skipping it for a border-only separator — the client reported that
+// as headers "lost/reused inconsistently" and asked for every task block to carry its own
+// headers, so the skip is removed entirely). indexInGroup/groupTaskCount feed
+// formatTaskTitleForDisplay's "(01) Title" numbering (see its own comment) — a display-only
+// prefix, never touching task.title itself.
+function renderTaskBlockHtml(task, updates, { indexInGroup, groupTaskCount }) {
   const updatesRows =
     updates.length > 0
       ? updates.map((u) => renderUpdateRowHtml(u)).join('')
       : `<tr><td colspan="${REPORT_COLUMN_COUNT}" class="empty-updates">${escapeHtml(EMPTY_UPDATES_TEXT)}</td></tr>`;
+  const displayTitle = formatTaskTitleForDisplay(task.title, indexInGroup, groupTaskCount);
 
   return `
-<table class="task-header${isFirstInGroup ? '' : ' no-header'}">
-${isFirstInGroup ? `<thead><tr>${TASK_HEADER_LABELS.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead>` : ''}
+<table class="task-header">
+<thead><tr>${TASK_HEADER_LABELS.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead>
 <tbody><tr>
 <td>${bdi(escapeHtml(task.codeNumber))}</td>
-<td>${bdi(escapeHtml(task.title))}</td>
+<td>${bdi(escapeHtml(displayTitle))}</td>
 <td>${bdi(escapeHtml(formatDateShort(task.deadline)))}</td>
 <td>${bdi(escapeHtml(formatRemainingDaysLabel(task.timeStatus)))}</td>
 </tr></tbody>
@@ -429,7 +444,7 @@ function renderReportHtml(groups, { headerInfo }) {
           .map(
             (group) => `
 <h2 class="assignee-header">${escapeHtml(ASSIGNEE_LABEL)}: ${bdi(escapeHtml(group.assignee.name))} — ${escapeHtml(RESPONSIBILITY_LABEL)}: ${bdi(escapeHtml(group.assignee.responsibility))}</h2>
-${group.tasks.map(({ task, updates }, index) => renderTaskBlockHtml(task, updates, { isFirstInGroup: index === 0 })).join('')}`
+${group.tasks.map(({ task, updates }, index) => renderTaskBlockHtml(task, updates, { indexInGroup: index, groupTaskCount: group.tasks.length })).join('')}`
           )
           .join('')
       : '<p>No tasks found.</p>';
@@ -568,12 +583,41 @@ async function generatePdf(html) {
   });
 }
 
+// Prompt — root-caused the "JPEG cropped on the right side" report, in two layers:
+// 1. Puppeteer's page never had setViewport() called on it, so it stayed at Puppeteer's own
+//    default (800x600) regardless of how wide/tall the actual rendered report content was.
+// 2. The real surprise, found only by comparing screenshots taken different ways on the same
+//    page (not by reading Puppeteer's docs): it's specifically Chromium's CLIPPED screenshot
+//    capture path — `page.screenshot({ clip })`, and `fullPage: true` goes through that exact
+//    same path internally — that corrupts this RTL document's rendering. A verified example: a
+//    single-ذمہ دار filtered report whose content measured well within the default 800x600 (no
+//    overflow at all) still came out with "ذمہ دار:"/"کام کوڈ" missing from the right edge under
+//    `fullPage: true` AND under an explicit `clip` of the exact same size — while a plain,
+//    unclipped `page.screenshot()` at that identical viewport size rendered every element
+//    correctly. Clipped capture, not viewport width, was silently re-flowing/mispainting the RTL
+//    layout. Fix: measure the page's real rendered width/height, resize the viewport to match
+//    EXACTLY via setViewport (never a hardcoded guess, never shrinking font/scale), then take a
+//    plain, unclipped screenshot — since the viewport now equals the content size exactly, a
+//    plain capture already covers the whole report with nothing left to clip.
+async function resizeViewportToContent(page) {
+  const { width, height } = await page.evaluate(() => ({
+    // eslint-disable-next-line no-undef -- runs inside the Puppeteer page (browser context), not Node.
+    width: document.documentElement.scrollWidth,
+    // eslint-disable-next-line no-undef -- runs inside the Puppeteer page (browser context), not Node.
+    height: document.documentElement.scrollHeight,
+  }));
+  await page.setViewport({ width, height });
+}
+
 async function generateJpeg(html) {
   return withBrowserPage('generateJpeg', async (page) => {
     await page.setContent(html, { waitUntil: 'load', timeout: 45000 });
     await waitForFontsReady(page);
-    // Same Uint8Array-vs-Buffer reasoning as generatePdf above.
-    return Buffer.from(await page.screenshot({ type: 'jpeg', fullPage: true }));
+    await resizeViewportToContent(page);
+    // Deliberately NOT fullPage/clip — see resizeViewportToContent's comment: clipped capture is
+    // what was corrupting this RTL layout, not viewport size. The viewport above is already
+    // sized to the exact content, so a plain screenshot already captures all of it.
+    return Buffer.from(await page.screenshot({ type: 'jpeg' }));
   });
 }
 
@@ -783,34 +827,46 @@ function docxAttachmentCell(attachment) {
   });
 }
 
-// Prompt — isFirstInGroup mirrors the HTML/Excel de-dup: only the first task in a Zimmedar's
-// section gets the "کام کوڈ | کام | آخری تاریخ | باقی دن" header row; later tasks are a
-// header-less, single-row table with a thicker brand-green top border standing in for the
-// missing header, so consecutive tasks still read as visually distinct blocks.
-function docxTaskHeaderTable(task, { isFirstInGroup } = {}) {
+// Prompt — every task now gets its own "کام کوڈ | کام | آخری تاریخ | باقی دن" header row (see
+// renderTaskBlockHtml's matching HTML comment — same fix, same reason, applied here too).
+// indexInGroup/groupTaskCount feed formatTaskTitleForDisplay's "(01) Title" numbering.
+//
+// Prompt — `visuallyRightToLeft: true` is the actual OOXML table-direction flag (`<w:bidiVisual/>`
+// under the hood) — this is what makes Word render the FIRST cell in each row's children array as
+// the RIGHTMOST column and lay out the rest right-to-left from there, matching the exact reading
+// order docx.js's own cell INSERTION order already uses (TASK_HEADER_LABELS is already
+// [کام کوڈ, کام, آخری تاریخ, باقی دن] in that literal order). Without this, Word ignores document
+// `bidirectional`/paragraph-level RTL entirely for TABLE COLUMN ORDER and lays columns out
+// left-to-right regardless — `text-align: right` or per-paragraph `bidirectional` on the cell
+// content alone does not fix this, since column order is a table-level property, not a text one.
+function docxTaskHeaderTable(task, { indexInGroup, groupTaskCount } = {}) {
+  const displayTitle = formatTaskTitleForDisplay(task.title, indexInGroup, groupTaskCount);
+  const headerRow = new TableRow({ children: TASK_HEADER_LABELS.map((l) => docxCell(l, { header: true })) });
   const dataRow = new TableRow({
     children: [
       docxCell(task.codeNumber),
-      docxCell(task.title),
+      docxCell(displayTitle),
       docxCell(formatDateShort(task.deadline)),
       docxCell(formatRemainingDaysLabel(task.timeStatus)),
     ],
   });
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
-    // A header-less table is only ever a single row, so this top border doubles as the visual
-    // separator standing in for the header it's skipping.
-    borders: isFirstInGroup ? undefined : { top: { style: BorderStyle.SINGLE, size: 18, color: BRAND_GREEN } },
-    rows: isFirstInGroup ? [new TableRow({ children: TASK_HEADER_LABELS.map((l) => docxCell(l, { header: true })) }), dataRow] : [dataRow],
+    visuallyRightToLeft: true,
+    rows: [headerRow, dataRow],
   });
 }
 
+// Prompt — visuallyRightToLeft: true here too, same reason as docxTaskHeaderTable's own comment:
+// UPDATE_TABLE_LABELS' insertion order (تاریخ, رپلائی کرنے والا, وضاحت, تکمیل فیصد, اٹیچمنٹ) is
+// unchanged, but without this flag Word would still lay those columns out left-to-right.
 function docxUpdatesTable(updates) {
   const headerRow = new TableRow({ children: UPDATE_TABLE_LABELS.map((l) => docxCell(l, { header: true })) });
 
   if (updates.length === 0) {
     return new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
+      visuallyRightToLeft: true,
       rows: [
         headerRow,
         new TableRow({
@@ -844,7 +900,7 @@ function docxUpdatesTable(updates) {
       })
   );
 
-  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...dataRows] });
+  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, visuallyRightToLeft: true, rows: [headerRow, ...dataRows] });
 }
 
 // Prompt — filterDescription paragraph omitted entirely when it's just "All Data" (no filter
@@ -917,7 +973,7 @@ async function generateDocx(data, { headerInfo }) {
     );
 
     group.tasks.forEach(({ task, updates }, index) => {
-      children.push(docxTaskHeaderTable(task, { isFirstInGroup: index === 0 }));
+      children.push(docxTaskHeaderTable(task, { indexInGroup: index, groupTaskCount: group.tasks.length }));
       children.push(
         new Paragraph({
           heading: HeadingLevel.HEADING_4,

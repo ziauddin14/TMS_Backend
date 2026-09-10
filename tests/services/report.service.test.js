@@ -318,7 +318,7 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
     expect(html).not.toContain('Noto Nastaliq Urdu');
   });
 
-  it('prints the column-header row ("کام کوڈ | کام | آخری تاریخ | باقی دن") only for the FIRST task in a Zimmedar section, not repeated for every task', () => {
+  it('prints the column-header row ("کام کوڈ | کام | آخری تاریخ | باقی دن") for EVERY task in a Zimmedar section, not just the first', () => {
     const group = {
       assignee: { id: 'u1', name: 'Ali', responsibility: 'IT' },
       tasks: [
@@ -330,16 +330,44 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
     const html = reportService.renderReportHtml([group], { headerInfo: SAMPLE_HEADER_INFO });
     const bodyHtml = html.slice(html.indexOf('<body>')); // exclude the <style> block, which has its own explanatory comment mentioning this label
 
-    // The column header text appears exactly once per label (only the first task's table has a
-    // <thead>), even though there are 3 tasks.
+    // The column header text appears once per task — 3 tasks, 3 <thead> rows.
     const codeHeaderOccurrences = bodyHtml.split('کام کوڈ').length - 1;
-    expect(codeHeaderOccurrences).toBe(1);
-    // But every task's own data still renders.
+    expect(codeHeaderOccurrences).toBe(3);
+    expect(html.match(/<thead>/g)).toHaveLength(3 + 3); // 3 task-header + 3 updates-table theads
+    // Every task's own data still renders.
     expect(html).toContain('<bdi>1</bdi>');
     expect(html).toContain('<bdi>2</bdi>');
     expect(html).toContain('<bdi>3</bdi>');
-    // Later tasks get the no-header/visual-separator class instead of a repeated <thead>.
-    expect(html).toContain('task-header no-header');
+    // No leftover "no-header"/skip class anywhere.
+    expect(html).not.toContain('no-header');
+  });
+
+  // Prompt — visual-only "(01) Title" numbering: only kicks in once a ذمہ دار has MORE than one
+  // task, starts at (01), never touches task.title/task.codeNumber, and a single-task section gets
+  // no number at all (covered by the next test).
+  it('prefixes task titles with "(01)", "(02)", "(03)"... when a Zimmedar has more than one task', () => {
+    const group = {
+      assignee: { id: 'u1', name: 'Ali', responsibility: 'IT' },
+      tasks: [
+        { task: { codeNumber: '1', title: 'First', deadline: new Date(), timeStatus: { type: 'remaining', days: 1 } }, updates: [] },
+        { task: { codeNumber: '2', title: 'Second', deadline: new Date(), timeStatus: { type: 'remaining', days: 1 } }, updates: [] },
+        { task: { codeNumber: '3', title: 'Third', deadline: new Date(), timeStatus: { type: 'remaining', days: 1 } }, updates: [] },
+      ],
+    };
+    const html = reportService.renderReportHtml([group], { headerInfo: SAMPLE_HEADER_INFO });
+    expect(html).toContain('<bdi>(01) First</bdi>');
+    expect(html).toContain('<bdi>(02) Second</bdi>');
+    expect(html).toContain('<bdi>(03) Third</bdi>');
+  });
+
+  it('does NOT number a task title when its Zimmedar has only one task', () => {
+    const group = {
+      assignee: { id: 'u1', name: 'Ali', responsibility: 'IT' },
+      tasks: [{ task: { codeNumber: '1', title: 'Solo Task', deadline: new Date(), timeStatus: { type: 'remaining', days: 1 } }, updates: [] }],
+    };
+    const html = reportService.renderReportHtml([group], { headerInfo: SAMPLE_HEADER_INFO });
+    expect(html).toContain('<bdi>Solo Task</bdi>');
+    expect(html).not.toContain('(01)');
   });
 
   it('omits the filter-description line entirely when there is nothing to say ("All Data"), but shows a real one when a filter is active', () => {
@@ -569,7 +597,7 @@ describe('generateDocx (docx package, real generation)', () => {
     expect(embeddedFontFiles.length).toBeGreaterThan(0);
   });
 
-  it('prints "کام کوڈ" only once for a Zimmedar with multiple tasks — later tasks skip the repeated header row', async () => {
+  it('prints "کام کوڈ" for EVERY task in a Zimmedar section, not just the first, and numbers the titles "(01)"/"(02)"', async () => {
     const admin = await makeAdmin();
     const assignee = await makeUser({ name: 'Ali' });
     const lookup = await makeLookup();
@@ -583,9 +611,31 @@ describe('generateDocx (docx package, real generation)', () => {
     const documentXml = await zip.file('word/document.xml').async('string');
 
     const codeHeaderOccurrences = documentXml.split('کام کوڈ').length - 1;
-    expect(codeHeaderOccurrences).toBe(1);
-    expect(documentXml).toContain('First');
-    expect(documentXml).toContain('Second');
+    expect(codeHeaderOccurrences).toBe(2);
+    expect(documentXml).toContain('(01) First');
+    expect(documentXml).toContain('(02) Second');
+  });
+
+  // Prompt — the client's own explicit challenge: `bidirectional: true` on a paragraph only
+  // affects TEXT flow within a cell, not the TABLE'S column order — Word still lays columns out
+  // left-to-right in literal cell-insertion order unless the table itself carries OOXML's
+  // `<w:bidiVisual/>` flag (docx.js's `visuallyRightToLeft` option). This asserts the actual XML
+  // tag is present on the generated tables, not just that the document "looks" RTL.
+  it('sets genuine OOXML table-direction RTL (<w:bidiVisual/>) on the task-header and Updates tables, not just paragraph-level bidi', async () => {
+    const admin = await makeAdmin();
+    const assignee = await makeUser({ name: 'Ali' });
+    const lookup = await makeLookup();
+    await taskService.createTask({ id: admin.id }, { title: 'First', assignees: [assignee._id], responsibility: lookup.value, deadline: inDays(5) });
+    const data = await reportService.buildReportData({ id: admin.id, role: 'admin' }, {}, {});
+    const headerInfo = reportService.buildHeaderInfo({ id: admin.id, name: admin.name, responsibility: admin.responsibility }, {});
+
+    const buffer = await reportService.generateDocx(data, { headerInfo });
+    const zip = await JSZip.loadAsync(buffer);
+    const documentXml = await zip.file('word/document.xml').async('string');
+
+    // One table-header table + one Updates table for this single task = 2 tables, both RTL.
+    const bidiVisualOccurrences = documentXml.split('bidiVisual').length - 1;
+    expect(bidiVisualOccurrences).toBe(2);
   });
 
   it('shows "کوئی اپڈیٹ نہیں" (Prompt — was English "No updates yet") for a task with no updates', async () => {
@@ -617,7 +667,42 @@ describe('generatePdf / generateJpeg (Puppeteer, real generation)', () => {
     expect(buffer[0]).toBe(0xff);
     expect(buffer[1]).toBe(0xd8);
   }, 30000);
+
+  // Prompt — root cause of the "JPEG cropped on the right side" report: Puppeteer's page stayed
+  // at its own default 800px-wide viewport, and fullPage:true only extends the CAPTURED height,
+  // never the width — content wider than 800px (a long, unwrapped RTL header line, matching real
+  // reports once a filter narrows to one ذمہ دار) got cut off. This HTML has an unwrapped div far
+  // wider than 800px on purpose; the fix (resizeViewportToContent) measures the page's own real
+  // scrollWidth and resizes the viewport to match before capturing — so the resulting JPEG's own
+  // pixel width must cover the full unwrapped content, not be clamped at the old 800px default.
+  it('generateJpeg is never cropped: a JPEG wider than Puppeteer\'s 800px default viewport captures its FULL width', async () => {
+    const wideHtml = `<html dir="rtl"><body style="margin:0">
+      <div style="white-space:nowrap; font-size:20px;">${'ایک لمبی اور غیر لپٹی ہوئی سطر '.repeat(20)}</div>
+    </body></html>`;
+    const buffer = await reportService.generateJpeg(wideHtml);
+    const { width } = readJpegDimensions(buffer);
+    expect(width).toBeGreaterThan(800);
+  }, 30000);
 });
+
+// Minimal, dependency-free JPEG width/height reader: scans markers for a Start-Of-Frame segment
+// (SOF0/SOF2 — the only ones Chromium's screenshot encoder emits) and reads its big-endian
+// height/width fields, exactly as the JPEG spec lays them out.
+function readJpegDimensions(buffer) {
+  let offset = 2; // skip the SOI marker (0xFFD8)
+  while (offset < buffer.length) {
+    if (buffer[offset] !== 0xff) throw new Error('Malformed JPEG: expected a marker');
+    const marker = buffer[offset + 1];
+    if (marker === 0xc0 || marker === 0xc2) {
+      const height = buffer.readUInt16BE(offset + 5);
+      const width = buffer.readUInt16BE(offset + 7);
+      return { width, height };
+    }
+    const segmentLength = buffer.readUInt16BE(offset + 2);
+    offset += 2 + segmentLength;
+  }
+  throw new Error('No SOF marker found in JPEG');
+}
 
 // Sanity check that the Document/Packer imports used inside report.service.js are wired
 // correctly at the module level too (not just via generateDocx's own thin wrapper).
