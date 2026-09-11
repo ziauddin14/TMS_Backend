@@ -85,12 +85,23 @@ const USER_SUMMARY_COLUMN_LABELS = {
   total: 'Total',
 };
 
-// Grouped task report's fixed columns (docs/06-backend.md §9, rewritten) — every format
-// (html->pdf/jpeg, excel, docx) renders the SAME two tables per task, in this order. Prompt —
-// exact Urdu terms as given, not invented translations; do not add/rename without being handed
-// the replacement term explicitly.
-const TASK_HEADER_LABELS = ['کام کوڈ', 'کام', 'آخری تاریخ', 'باقی دن'];
+// Grouped task report's fixed task-summary columns. Prompt — client's explicit, "LOCKED" column
+// spec for the manual-office-report digitization: exact labels AND order — کوڈ, کام کی تفصیل,
+// باقی دن, آخری تاریخ (renamed/reordered from this project's earlier کام کوڈ/کام/آخری
+// تاریخ/باقی دن — flagging the discrepancy here rather than silently carrying the old wording,
+// per this project's own "surface doc/data contradictions" convention). HTML/PDF/JPEG and DOCX
+// both render these 4 columns in this literal array order (see renderTaskBlockHtml/
+// docxTaskHeaderTable); generateExcel (untouched/out of scope for this request) also reads this
+// same array for its own header row, so its hardcoded data-row value order was updated to match —
+// see its own comment — purely to avoid a header/data column mismatch, not a scope expansion.
+const TASK_HEADER_LABELS = ['کوڈ', 'کام کی تفصیل', 'باقی دن', 'آخری تاریخ'];
+// Prompt — still used by generateExcel's own (unchanged, out-of-scope) tabular Updates section;
+// the HTML/PDF/JPEG/DOCX pipelines no longer render this as a table at all (see
+// renderUpdateEntryHtml/docxUpdateEntry below) — the client's manual-report reference shows
+// updates as a chronological conversation (date, author, text), not a spreadsheet-style row, so
+// tکمیل فیصد/اٹیچمنٹ are folded into each entry's own secondary line instead of separate columns.
 const UPDATE_TABLE_LABELS = ['تاریخ', 'رپلائی کرنے والا', 'وضاحت', 'تکمیل فیصد', 'اٹیچمنٹ'];
+const [, , , UPDATE_COMPLETION_LABEL, UPDATE_ATTACHMENT_LABEL] = UPDATE_TABLE_LABELS;
 const UPDATES_HEADING = 'اپڈیٹس';
 const ASSIGNEE_LABEL = 'ذمہ دار';
 const RESPONSIBILITY_LABEL = 'ذمہ داری';
@@ -277,9 +288,16 @@ async function buildReportData(requestingUser, filters, { lastUpdateOnly } = {})
     });
   }
 
+  // Prompt — allUpdates is fetched newest-first (createdAt: -1) so lastUpdateOnly's slice(0, 1)
+  // correctly grabs the single MOST RECENT entry. The client's manual-report reference reads
+  // updates like an actual conversation, oldest message first — for the full-history case (not
+  // lastUpdateOnly) the array is reversed to chronological/ascending order right here, after the
+  // lastUpdateOnly decision already used the original newest-first order; this only changes
+  // report DISPLAY order, not what's fetched/stored, and not the separate task-updates
+  // history views elsewhere in the app (those query taskUpdate.service.js directly, untouched).
   const tasksWithUpdates = tasks.map((task) => {
     const allTaskUpdates = updatesByTaskId[task.id] || [];
-    const updates = lastUpdateOnly ? allTaskUpdates.slice(0, 1) : allTaskUpdates;
+    const updates = lastUpdateOnly ? allTaskUpdates.slice(0, 1) : [...allTaskUpdates].reverse();
     return { task, updates };
   });
 
@@ -340,20 +358,29 @@ function htmlDocument(title, bodyHtml) {
   th, td { border: 1px solid #ccc; padding: 8px 6px; text-align: right; font-size: 12px; line-height: 2; height: auto; overflow-wrap: break-word; word-break: break-word; }
   th { background: #eef5ef; }
   h4.updates-heading { font-size: 13px; margin: 4px 0; }
-  table.updates-table { margin-bottom: 16px; }
-  td.empty-updates { text-align: center; color: #777; }
 
-  /* Prompt — "آخری تاریخ"/"باقی دن" (and Code Number/Date/Completion % elsewhere) are short,
-     fixed-shape system-generated values that should never need two lines; table-layout:fixed
-     above (needed so nth-child widths below are honored at all) otherwise splits width evenly
-     across every column, which was squeezing exactly these into wrapping — caught by looking at
-     a generated image, not by reading the CSS: "10 Sep 26" broke into "10 Sep" / "26". Free-text
-     columns (Task/Description) are deliberately left wrapping — that content is unbounded. */
+  /* Prompt — کوڈ/باقی دن/آخری تاریخ are short, fixed-shape system-generated values that should
+     never need two lines; table-layout:fixed above (needed so these nth-child widths are honored
+     at all) otherwise splits width evenly across every column, which was squeezing exactly these
+     into wrapping — caught by looking at a generated image, not by reading the CSS: "10 Sep 26"
+     broke into "10 Sep" / "26". کام کی تفصیل (nth-child 2, free text) is deliberately left
+     wrapping — that content is unbounded. */
   .task-report table.task-header th:nth-child(1), .task-report table.task-header td:nth-child(1) { width: 15%; white-space: nowrap; }
   .task-report table.task-header th:nth-child(3), .task-report table.task-header td:nth-child(3),
   .task-report table.task-header th:nth-child(4), .task-report table.task-header td:nth-child(4) { width: 20%; white-space: nowrap; }
-  .task-report table.updates-table th:nth-child(1), .task-report table.updates-table td:nth-child(1),
-  .task-report table.updates-table th:nth-child(4), .task-report table.updates-table td:nth-child(4) { width: 12%; white-space: nowrap; }
+
+  /* Prompt — replaces the old 5-column "Updates" TABLE: the client's manual-report reference
+     shows each update as a chronological conversation entry (date + author, then the actual
+     text), not a spreadsheet row — see renderUpdateEntryHtml. break-inside/page-break-inside:
+     avoid on both this and table.task-header (below) keep a task's header row and each update
+     entry from being ugly-split across a PDF page boundary (Section 10's "prefer to stay
+     together"); this only ever affects ONE row/box at a time, so a genuinely long report still
+     flows across pages normally — nothing is clipped to force a single page. */
+  .task-report .update-entry { border: 1px solid #ccc; border-radius: 4px; padding: 8px 10px; margin-bottom: 8px; break-inside: avoid; page-break-inside: avoid; }
+  .task-report .update-entry .update-meta { margin: 0 0 4px; font-weight: bold; color: #${BRAND_GREEN}; }
+  .task-report .update-entry .update-text { margin: 0; white-space: pre-wrap; }
+  .task-report .update-entry .update-extra { margin: 4px 0 0; font-size: 11px; color: #666; }
+  .task-report p.empty-updates { color: #777; margin: 4px 0 16px; }
 
   .task-report .brand-header { text-align: center; margin-bottom: 12px; }
   .task-report .brand-logo { width: 64px; height: 64px; display: block; margin: 0 auto 8px; }
@@ -362,11 +389,13 @@ function htmlDocument(title, bodyHtml) {
   .task-report .brand-divider { border: none; border-top: 3px solid #${BRAND_GREEN}; margin: 12px 0 16px; }
   .task-report h1.report-title { color: #${BRAND_GREEN}; text-align: center; }
   .task-report h2.assignee-header { font-size: 16px; margin: 20px 0 8px; padding-bottom: 4px; color: #${BRAND_GREEN}; border-bottom: 2px solid #${BRAND_GREEN}; }
-  /* Prompt — every task now prints its own "کام کوڈ | کام | آخری تاریخ | باقی دن" header row (see
-     renderTaskBlockHtml), so every task-header table gets the same top spacing — not just tasks
-     after the first — to keep consistent breathing room from whatever precedes it (the ذمہ دار
-     heading, or the previous task's Updates table). */
-  .task-report table.task-header { margin-top: 14px; }
+  /* Prompt — every task now prints its own "کوڈ | کام کی تفصیل | باقی دن | آخری تاریخ" header row
+     (see renderTaskBlockHtml), so every task-header table gets the same top spacing — not just
+     tasks after the first — to keep consistent breathing room from whatever precedes it (the
+     ذمہ دار heading, or the previous task's last update entry). break-inside: avoid — see the
+     .update-entry rule's own comment; this table is only ever 2 rows (header + the one task), so
+     avoiding a split here never risks stranding a large block. */
+  .task-report table.task-header { margin-top: 14px; break-inside: avoid; page-break-inside: avoid; }
   /* th declared AFTER, and deliberately not scoped away from table.task-header: every table
      header row (the 2-row task-header table's own header included) gets the same brand-green
      fill + white text; task-header's own DATA row (below it) keeps its light-gray tint. Caught
@@ -390,28 +419,38 @@ function attachmentCellHtml(attachment) {
   return attachment.url ? `<a href="${escapeHtml(attachment.url)}">${bdi(label)}</a>` : bdi(label);
 }
 
-function renderUpdateRowHtml(update) {
-  return `<tr>
-<td>${bdi(escapeHtml(formatDateShort(update.createdAt)))}</td>
-<td>${bdi(escapeHtml(update.updatedBy?.name))}</td>
-<td>${bdi(escapeHtml(update.description))}</td>
-<td>${bdi(`${update.completionPercent}%`)}</td>
-<td>${attachmentCellHtml(update.attachment)}</td>
-</tr>`;
+// Prompt — replaces the old <tr> table-row-per-update rendering: the client's manual-report
+// reference shows each update as its own chronological conversation entry — date + author on one
+// line, the actual update text below it — not a spreadsheet row. تکمیل فیصد/اٹیچمنٹ (previously
+// their own table columns) are folded into a compact secondary line so neither is silently
+// dropped from the visual report; the underlying data itself is completely unchanged (see
+// buildReportData — only the DISPLAY order/shape changed, never what's fetched or stored).
+function renderUpdateEntryHtml(update) {
+  const extraParts = [`${escapeHtml(UPDATE_COMPLETION_LABEL)}: ${bdi(`${update.completionPercent}%`)}`];
+  if (update.attachment) {
+    extraParts.push(`${escapeHtml(UPDATE_ATTACHMENT_LABEL)}: ${attachmentCellHtml(update.attachment)}`);
+  }
+  return `
+<div class="update-entry">
+<p class="update-meta">${bdi(escapeHtml(formatDateShort(update.createdAt)))} — ${bdi(escapeHtml(update.updatedBy?.name ?? '-'))}</p>
+<p class="update-text">${bdi(escapeHtml(update.description))}</p>
+<p class="update-extra">${extraParts.join(' · ')}</p>
+</div>`;
 }
 
-// Prompt — every task in a Zimmedar's section now prints its OWN
-// "کام کوڈ | کام | آخری تاریخ | باقی دن" column-header row (previously only the first task in a
-// group did, with later tasks skipping it for a border-only separator — the client reported that
-// as headers "lost/reused inconsistently" and asked for every task block to carry its own
-// headers, so the skip is removed entirely). indexInGroup/groupTaskCount feed
-// formatTaskTitleForDisplay's "(01) Title" numbering (see its own comment) — a display-only
-// prefix, never touching task.title itself.
+// Prompt — every task in a Zimmedar's section prints its OWN "کوڈ | کام کی تفصیل | باقی دن |
+// آخری تاریخ" column-header row (previously only the first task in a group did, with later tasks
+// skipping it for a border-only separator — the client reported that as headers "lost/reused
+// inconsistently" and asked for every task block to carry its own headers, so the skip stays
+// removed). indexInGroup/groupTaskCount feed formatTaskTitleForDisplay's "(01) Title" numbering
+// (see its own comment) — a display-only prefix, never touching task.title itself. The data row's
+// own cell order matches TASK_HEADER_LABELS' locked order exactly: کوڈ, کام کی تفصیل, باقی دن
+// (remaining days), آخری تاریخ (deadline) — note remaining-days now comes BEFORE deadline.
 function renderTaskBlockHtml(task, updates, { indexInGroup, groupTaskCount }) {
-  const updatesRows =
+  const updatesHtml =
     updates.length > 0
-      ? updates.map((u) => renderUpdateRowHtml(u)).join('')
-      : `<tr><td colspan="${REPORT_COLUMN_COUNT}" class="empty-updates">${escapeHtml(EMPTY_UPDATES_TEXT)}</td></tr>`;
+      ? updates.map((u) => renderUpdateEntryHtml(u)).join('')
+      : `<p class="empty-updates">${escapeHtml(EMPTY_UPDATES_TEXT)}</p>`;
   const displayTitle = formatTaskTitleForDisplay(task.title, indexInGroup, groupTaskCount);
 
   return `
@@ -420,15 +459,12 @@ function renderTaskBlockHtml(task, updates, { indexInGroup, groupTaskCount }) {
 <tbody><tr>
 <td>${bdi(escapeHtml(task.codeNumber))}</td>
 <td>${bdi(escapeHtml(displayTitle))}</td>
-<td>${bdi(escapeHtml(formatDateShort(task.deadline)))}</td>
 <td>${bdi(escapeHtml(formatRemainingDaysLabel(task.timeStatus)))}</td>
+<td>${bdi(escapeHtml(formatDateShort(task.deadline)))}</td>
 </tr></tbody>
 </table>
 <h4 class="updates-heading">${escapeHtml(UPDATES_HEADING)}</h4>
-<table class="updates-table">
-<thead><tr>${UPDATE_TABLE_LABELS.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead>
-<tbody>${updatesRows}</tbody>
-</table>`;
+${updatesHtml}`;
 }
 
 // docs/06-backend.md §9 (rewritten) — builds the HTML string rendered by generatePdf/generateJpeg.
@@ -733,7 +769,9 @@ async function generateExcel(data, { headerInfo }) {
       if (isFirstInGroup) {
         addDataRow(TASK_HEADER_LABELS, { header: true });
       }
-      const taskRow = addDataRow([task.codeNumber, task.title, formatDateShort(task.deadline), formatRemainingDaysLabel(task.timeStatus)], {
+      // Prompt — value order matches TASK_HEADER_LABELS' own (locked) order: کوڈ, کام کی تفصیل,
+      // باقی دن, آخری تاریخ — kept in sync so this row's data never lands under the wrong header.
+      const taskRow = addDataRow([task.codeNumber, task.title, formatRemainingDaysLabel(task.timeStatus), formatDateShort(task.deadline)], {
         ltrColumns: [1, 3, 4],
       });
       if (!isFirstInGroup) {
@@ -810,44 +848,32 @@ function docxCell(text, { bold = false, header = false } = {}) {
   });
 }
 
-function docxAttachmentCell(attachment) {
-  if (!attachment?.url) return docxCell(attachmentLabel(attachment));
-  return new TableCell({
-    children: [
-      new Paragraph({
-        bidirectional: true,
-        children: [
-          new ExternalHyperlink({
-            link: attachment.url,
-            children: [new TextRun({ text: attachment.fileName || 'Attachment', style: 'Hyperlink', font: NASTALIQ_FONT_NAME })],
-          }),
-        ],
-      }),
-    ],
-  });
-}
-
-// Prompt — every task now gets its own "کام کوڈ | کام | آخری تاریخ | باقی دن" header row (see
-// renderTaskBlockHtml's matching HTML comment — same fix, same reason, applied here too).
-// indexInGroup/groupTaskCount feed formatTaskTitleForDisplay's "(01) Title" numbering.
+// Prompt — every task now gets its own "کوڈ | کام کی تفصیل | باقی دن | آخری تاریخ" header row
+// (see renderTaskBlockHtml's matching HTML comment — same fix, same reason, applied here too).
+// indexInGroup/groupTaskCount feed formatTaskTitleForDisplay's "(01) Title" numbering. The data
+// row's cell order matches TASK_HEADER_LABELS' locked order exactly (remaining-days BEFORE
+// deadline — see that constant's own comment).
 //
 // Prompt — `visuallyRightToLeft: true` is the actual OOXML table-direction flag (`<w:bidiVisual/>`
 // under the hood) — this is what makes Word render the FIRST cell in each row's children array as
 // the RIGHTMOST column and lay out the rest right-to-left from there, matching the exact reading
-// order docx.js's own cell INSERTION order already uses (TASK_HEADER_LABELS is already
-// [کام کوڈ, کام, آخری تاریخ, باقی دن] in that literal order). Without this, Word ignores document
+// order docx.js's own cell INSERTION order already uses. Without this, Word ignores document
 // `bidirectional`/paragraph-level RTL entirely for TABLE COLUMN ORDER and lays columns out
 // left-to-right regardless — `text-align: right` or per-paragraph `bidirectional` on the cell
 // content alone does not fix this, since column order is a table-level property, not a text one.
+// cantSplit: true on the data row keeps this one-row table together across a page boundary
+// (Section 10's "prefer to stay together") — it can only ever move the whole row to the next
+// page, never clip or drop content.
 function docxTaskHeaderTable(task, { indexInGroup, groupTaskCount } = {}) {
   const displayTitle = formatTaskTitleForDisplay(task.title, indexInGroup, groupTaskCount);
   const headerRow = new TableRow({ children: TASK_HEADER_LABELS.map((l) => docxCell(l, { header: true })) });
   const dataRow = new TableRow({
+    cantSplit: true,
     children: [
       docxCell(task.codeNumber),
       docxCell(displayTitle),
-      docxCell(formatDateShort(task.deadline)),
       docxCell(formatRemainingDaysLabel(task.timeStatus)),
+      docxCell(formatDateShort(task.deadline)),
     ],
   });
   return new Table({
@@ -857,50 +883,58 @@ function docxTaskHeaderTable(task, { indexInGroup, groupTaskCount } = {}) {
   });
 }
 
-// Prompt — visuallyRightToLeft: true here too, same reason as docxTaskHeaderTable's own comment:
-// UPDATE_TABLE_LABELS' insertion order (تاریخ, رپلائی کرنے والا, وضاحت, تکمیل فیصد, اٹیچمنٹ) is
-// unchanged, but without this flag Word would still lay those columns out left-to-right.
-function docxUpdatesTable(updates) {
-  const headerRow = new TableRow({ children: UPDATE_TABLE_LABELS.map((l) => docxCell(l, { header: true })) });
-
-  if (updates.length === 0) {
-    return new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      visuallyRightToLeft: true,
-      rows: [
-        headerRow,
-        new TableRow({
-          children: [
-            new TableCell({
-              columnSpan: REPORT_COLUMN_COUNT,
-              children: [
-                new Paragraph({
-                  bidirectional: true,
-                  alignment: AlignmentType.CENTER,
-                  children: [new TextRun({ text: EMPTY_UPDATES_TEXT, font: NASTALIQ_FONT_NAME })],
-                }),
-              ],
-            }),
-          ],
-        }),
-      ],
-    });
+// Prompt — replaces the old 5-column docxUpdatesTable: same reasoning as renderUpdateEntryHtml
+// (see its own comment) — the client's manual-report reference shows updates as a chronological
+// conversation, not a spreadsheet. Each entry is built as ONE Paragraph (meta line, then the
+// update text, then تکمیل فیصد/اٹیچمنٹ, joined with manual line breaks via `break: 1`) so a single
+// `border` on that one paragraph draws a unified box around the whole entry — Word paragraph
+// borders apply per-paragraph, so three separate paragraphs would have drawn three separate boxes
+// instead of the one continuous box the HTML/PDF/JPEG version uses (see .update-entry's own CSS
+// comment). keepLines keeps this one paragraph from breaking across a page (Section 10).
+// Prompt — found by opening the actual Word-rendered PDF, not by reading the XML: combining a
+// digit/Latin value (date, "40%", a filename) and its Urdu label in ONE run let Word's bidi
+// algorithm reorder them within the paragraph — "تکمیل فیصد: 25%" came out with the "25%" run
+// repositioned. HTML's <bdi> isolates exactly this case (see bdi()'s own comment); docx's per-run
+// `rightToLeft: false` is the equivalent isolation at the OOXML level — every digit/Latin VALUE
+// below is its own run with `rightToLeft: false`, every Urdu LABEL stays a plain (paragraph-
+// default RTL) run, matching the codebase's established bdi-only-wraps-values convention.
+function docxUpdateEntry(update) {
+  const border = { style: BorderStyle.SINGLE, size: 4, color: 'CCCCCC', space: 4 };
+  const children = [
+    new TextRun({ text: formatDateShort(update.createdAt), bold: true, rightToLeft: false, color: BRAND_GREEN, font: NASTALIQ_FONT_NAME }),
+    new TextRun({ text: ' — ', bold: true, color: BRAND_GREEN, font: NASTALIQ_FONT_NAME }),
+    new TextRun({ text: update.updatedBy?.name || '-', bold: true, color: BRAND_GREEN, font: NASTALIQ_FONT_NAME }),
+    new TextRun({ text: update.description || '', break: 1, font: NASTALIQ_FONT_NAME }),
+    new TextRun({ text: `${UPDATE_COMPLETION_LABEL}: `, break: 1, size: 18, color: '666666', font: NASTALIQ_FONT_NAME }),
+    new TextRun({ text: `${update.completionPercent}%`, rightToLeft: false, size: 18, color: '666666', font: NASTALIQ_FONT_NAME }),
+  ];
+  if (update.attachment) {
+    children.push(new TextRun({ text: ` · ${UPDATE_ATTACHMENT_LABEL}: `, size: 18, color: '666666', font: NASTALIQ_FONT_NAME }));
+    if (update.attachment.url) {
+      children.push(
+        new ExternalHyperlink({
+          link: update.attachment.url,
+          children: [new TextRun({ text: attachmentLabel(update.attachment), style: 'Hyperlink', rightToLeft: false, size: 18, font: NASTALIQ_FONT_NAME })],
+        })
+      );
+    } else {
+      children.push(new TextRun({ text: attachmentLabel(update.attachment), rightToLeft: false, size: 18, color: '666666', font: NASTALIQ_FONT_NAME }));
+    }
   }
+  return new Paragraph({
+    bidirectional: true,
+    keepLines: true,
+    spacing: { after: 160 },
+    border: { top: border, bottom: border, left: border, right: border },
+    children,
+  });
+}
 
-  const dataRows = updates.map(
-    (u) =>
-      new TableRow({
-        children: [
-          docxCell(formatDateShort(u.createdAt)),
-          docxCell(u.updatedBy?.name || '-'),
-          docxCell(u.description),
-          docxCell(`${u.completionPercent}%`),
-          docxAttachmentCell(u.attachment),
-        ],
-      })
-  );
-
-  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, visuallyRightToLeft: true, rows: [headerRow, ...dataRows] });
+function docxUpdateEntries(updates) {
+  if (updates.length === 0) {
+    return [new Paragraph({ bidirectional: true, children: [new TextRun({ text: EMPTY_UPDATES_TEXT, color: '777777', font: NASTALIQ_FONT_NAME })] })];
+  }
+  return updates.map((u) => docxUpdateEntry(u));
 }
 
 // Prompt — filterDescription paragraph omitted entirely when it's just "All Data" (no filter
@@ -981,7 +1015,7 @@ async function generateDocx(data, { headerInfo }) {
           children: [new TextRun({ text: UPDATES_HEADING, color: BRAND_GREEN, bold: true, font: NASTALIQ_FONT_NAME })],
         })
       );
-      children.push(docxUpdatesTable(updates));
+      children.push(...docxUpdateEntries(updates));
       children.push(new Paragraph({ children: [] })); // spacer between tasks
     });
   });

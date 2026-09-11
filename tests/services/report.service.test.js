@@ -252,7 +252,7 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
     expect(html).toContain('<bdi>09 Sep 26</bdi>');
   });
 
-  it('renders an assignee header (with the exact ذمہ دار/ذمہ داری labels), task header row, and اپڈیٹس table, per group/task', () => {
+  it('renders an assignee header (with the exact ذمہ دار/ذمہ داری labels), task header row, and اپڈیٹس conversation entries, per group/task', () => {
     const groups = [
       {
         assignee: { id: 'u1', name: 'Ali', responsibility: 'IT' },
@@ -278,9 +278,11 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
     expect(html).toContain('اپڈیٹس');
     expect(html).toContain('Progress made');
     expect(html).toContain('40%');
-    // exact Urdu column labels, verbatim from the client's given term list — not invented.
-    ['کام کوڈ', 'کام', 'آخری تاریخ', 'باقی دن'].forEach((label) => expect(html).toContain(label));
-    ['تاریخ', 'رپلائی کرنے والا', 'وضاحت', 'تکمیل فیصد', 'اٹیچمنٹ'].forEach((label) => expect(html).toContain(label));
+    // exact, LOCKED Urdu column labels/order for the task-summary table.
+    ['کوڈ', 'کام کی تفصیل', 'باقی دن', 'آخری تاریخ'].forEach((label) => expect(html).toContain(label));
+    // Updates are a chronological conversation now (date/author/text), not a labeled table — only
+    // تکمیل فیصد (folded into each entry's own secondary line) still appears as a literal label.
+    expect(html).toContain('تکمیل فیصد');
   });
 
   it('shows "کوئی اپڈیٹ نہیں" (Prompt — was English "No updates yet") for a task with an empty updates array', () => {
@@ -318,7 +320,7 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
     expect(html).not.toContain('Noto Nastaliq Urdu');
   });
 
-  it('prints the column-header row ("کام کوڈ | کام | آخری تاریخ | باقی دن") for EVERY task in a Zimmedar section, not just the first', () => {
+  it('prints the column-header row ("کوڈ | کام کی تفصیل | باقی دن | آخری تاریخ") for EVERY task in a Zimmedar section, not just the first', () => {
     const group = {
       assignee: { id: 'u1', name: 'Ali', responsibility: 'IT' },
       tasks: [
@@ -331,9 +333,11 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
     const bodyHtml = html.slice(html.indexOf('<body>')); // exclude the <style> block, which has its own explanatory comment mentioning this label
 
     // The column header text appears once per task — 3 tasks, 3 <thead> rows.
-    const codeHeaderOccurrences = bodyHtml.split('کام کوڈ').length - 1;
+    const codeHeaderOccurrences = bodyHtml.split('کوڈ').length - 1;
     expect(codeHeaderOccurrences).toBe(3);
-    expect(html.match(/<thead>/g)).toHaveLength(3 + 3); // 3 task-header + 3 updates-table theads
+    // Updates are no longer a table (see renderUpdateEntryHtml) — only the task-header table has
+    // a <thead>, so 3 tasks = 3 <thead> total.
+    expect(html.match(/<thead>/g)).toHaveLength(3);
     // Every task's own data still renders.
     expect(html).toContain('<bdi>1</bdi>');
     expect(html).toContain('<bdi>2</bdi>');
@@ -494,15 +498,16 @@ describe('generateExcel (exceljs, real generation, rewritten grouped structure)'
     expect(joined).toContain('Collect boxes');
     expect(joined).toContain('اپڈیٹس');
     expect(joined).toContain('Progress');
-    // exact Urdu column labels
-    ['کام کوڈ', 'کام', 'آخری تاریخ', 'باقی دن', 'تاریخ', 'رپلائی کرنے والا', 'وضاحت', 'تکمیل فیصد', 'اٹیچمنٹ'].forEach((label) =>
+    // exact Urdu column labels — locked task-summary set (کوڈ/کام کی تفصیل/باقی دن/آخری تاریخ)
+    // plus the Updates table's own separate labels.
+    ['کوڈ', 'کام کی تفصیل', 'باقی دن', 'آخری تاریخ', 'تاریخ', 'رپلائی کرنے والا', 'وضاحت', 'تکمیل فیصد', 'اٹیچمنٹ'].forEach((label) =>
       expect(joined).toContain(label)
     );
 
     // brand-green fill on a table header row (e.g. the task-header row's first cell).
     const headerCandidateRow = sheet
       .getRows(1, sheet.rowCount)
-      .find((row) => row.getCell(1).value === 'کام کوڈ');
+      .find((row) => row.getCell(1).value === 'کوڈ');
     expect(headerCandidateRow.getCell(1).fill.fgColor.argb).toBe('FF1F6F3F');
   });
 
@@ -535,7 +540,7 @@ describe('generateExcel (exceljs, real generation, rewritten grouped structure)'
     const allText = [];
     workbook.worksheets[0].eachRow((row) => row.eachCell((cell) => allText.push(String(cell.value?.text ?? cell.value ?? ''))));
 
-    const codeHeaderOccurrences = allText.filter((v) => v === 'کام کوڈ').length;
+    const codeHeaderOccurrences = allText.filter((v) => v === 'کوڈ').length;
     expect(codeHeaderOccurrences).toBe(1);
     expect(allText).toContain('First');
     expect(allText).toContain('Second');
@@ -610,7 +615,7 @@ describe('generateDocx (docx package, real generation)', () => {
     const zip = await JSZip.loadAsync(buffer);
     const documentXml = await zip.file('word/document.xml').async('string');
 
-    const codeHeaderOccurrences = documentXml.split('کام کوڈ').length - 1;
+    const codeHeaderOccurrences = documentXml.split('کوڈ').length - 1;
     expect(codeHeaderOccurrences).toBe(2);
     expect(documentXml).toContain('(01) First');
     expect(documentXml).toContain('(02) Second');
@@ -620,8 +625,10 @@ describe('generateDocx (docx package, real generation)', () => {
   // affects TEXT flow within a cell, not the TABLE'S column order — Word still lays columns out
   // left-to-right in literal cell-insertion order unless the table itself carries OOXML's
   // `<w:bidiVisual/>` flag (docx.js's `visuallyRightToLeft` option). This asserts the actual XML
-  // tag is present on the generated tables, not just that the document "looks" RTL.
-  it('sets genuine OOXML table-direction RTL (<w:bidiVisual/>) on the task-header and Updates tables, not just paragraph-level bidi', async () => {
+  // tag is present on the generated table, not just that the document "looks" RTL. Updates are no
+  // longer rendered as a table at all (see docxUpdateEntry) — only the one task-header table
+  // exists per task now, so a single task's report has exactly 1 bidiVisual table.
+  it('sets genuine OOXML table-direction RTL (<w:bidiVisual/>) on the task-header table, not just paragraph-level bidi', async () => {
     const admin = await makeAdmin();
     const assignee = await makeUser({ name: 'Ali' });
     const lookup = await makeLookup();
@@ -633,9 +640,8 @@ describe('generateDocx (docx package, real generation)', () => {
     const zip = await JSZip.loadAsync(buffer);
     const documentXml = await zip.file('word/document.xml').async('string');
 
-    // One table-header table + one Updates table for this single task = 2 tables, both RTL.
     const bidiVisualOccurrences = documentXml.split('bidiVisual').length - 1;
-    expect(bidiVisualOccurrences).toBe(2);
+    expect(bidiVisualOccurrences).toBe(1);
   });
 
   it('shows "کوئی اپڈیٹ نہیں" (Prompt — was English "No updates yet") for a task with no updates', async () => {
