@@ -45,19 +45,19 @@ describe('buildHeaderInfo / buildFilterDescription (docs/06-backend.md §9 heade
     expect(info.filterDescription).toBe('All Data');
   });
 
-  it('carries the report-generator line (name + their own responsibility) and today\'s date, in the same "dd MMM yy" format used everywhere else', () => {
+  it('carries the report-generator line (name + their own responsibility) and today\'s date, in the same "DD-MM-YY" format used everywhere else', () => {
     const info = reportService.buildHeaderInfo({ name: 'Admin Person', responsibility: 'Zonal Incharge' }, {});
     expect(info.generatedByLine).toBe('Admin Person (Zonal Incharge)');
-    expect(info.generatedAtLabel).toMatch(/^\d{2} [A-Za-z]{3} \d{2}$/); // e.g. "09 Sep 26" — today, so not hardcoded
+    expect(info.generatedAtLabel).toMatch(/^\d{2}-\d{2}-\d{2}$/); // e.g. "09-09-26" — today, so not hardcoded
   });
 
-  it('builds the exact documented example: "Status: Ongoing, Deadline: Aug 1–31"', () => {
+  it('builds the filter description with DD-MM-YY range endpoints: "Status: Ongoing, Deadline: 01-08-26–31-08-26"', () => {
     const description = reportService.buildFilterDescription({
       status: 'ongoing',
       deadlineFrom: new Date('2026-08-01T00:00:00Z'),
       deadlineTo: new Date('2026-08-31T00:00:00Z'),
     });
-    expect(description).toBe('Status: Ongoing, Deadline: Aug 1–31');
+    expect(description).toBe('Status: Ongoing, Deadline: 01-08-26–31-08-26');
   });
 
   it('combines multiple active filters, one clause per filter, comma-separated', () => {
@@ -233,7 +233,7 @@ const SAMPLE_HEADER_INFO = {
   title: 'ٹاسک رپورٹ',
   filterDescription: 'All Data',
   generatedByLine: 'Admin Person (Admin)',
-  generatedAtLabel: '09 Sep 26',
+  generatedAtLabel: '09-09-26',
 };
 
 describe('renderReportHtml (pure — grouped structure, branded header, exact Urdu labels)', () => {
@@ -249,7 +249,7 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
     expect(html).toContain('رپورٹ جنریٹ کرنے والا:');
     expect(html).toContain('<bdi>Admin Person (Admin)</bdi>');
     expect(html).toContain('رپورٹ کی تاریخ:');
-    expect(html).toContain('<bdi>09 Sep 26</bdi>');
+    expect(html).toContain('<bdi>09-09-26</bdi>');
   });
 
   it('renders an assignee header (with the exact ذمہ دار/ذمہ داری labels), task header row, and an اپڈیٹس table, per group/task', () => {
@@ -490,8 +490,8 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
     ];
     const html = reportService.renderReportHtml(groups, { headerInfo: SAMPLE_HEADER_INFO });
 
-    expect(html).toContain('<bdi>01 Sep 26</bdi>'); // deadline
-    expect(html).toContain('<bdi>20 Aug 26</bdi>'); // update date
+    expect(html).toContain('<bdi>01-09-26</bdi>'); // deadline
+    expect(html).toContain('<bdi>20-08-26</bdi>'); // update date
     expect(html).toContain('<bdi>260801</bdi>');
     expect(html).toContain('<bdi>Collect boxes</bdi>');
     expect(html).toContain('<bdi>Progress made</bdi>');

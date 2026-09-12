@@ -27,7 +27,7 @@ const TaskUpdate = require('../models/TaskUpdate');
 const User = require('../models/User');
 const taskService = require('./task.service');
 const dashboardService = require('./dashboard.service');
-const { formatDateShort, MONTH_NAMES } = require('../utils/formatDate');
+const { formatDateShort } = require('../utils/formatDate');
 
 // "Unpaginated, all matching rows" (docs/06-backend.md §9) implemented by calling the existing,
 // unmodified listTasks with a limit far beyond this project's confirmed scale (docs/01-architecture.md
@@ -184,22 +184,12 @@ function bdi(escapedHtml) {
   return `<bdi>${escapedHtml}</bdi>`;
 }
 
-function formatShortDate(date) {
-  const d = new Date(date);
-  return `${MONTH_NAMES[d.getMonth()]} ${d.getDate()}`;
-}
-
+// FINAL DATE FORMAT — reuses the same DD-MM-YY formatter as the rest of the report so a filter
+// summary line never shows a different, non-compliant date shape (was a compact "Aug 1–31" style).
 function formatDateRange(from, to) {
-  if (from && to) {
-    const fromD = new Date(from);
-    const toD = new Date(to);
-    if (fromD.getFullYear() === toD.getFullYear() && fromD.getMonth() === toD.getMonth()) {
-      return `${MONTH_NAMES[fromD.getMonth()]} ${fromD.getDate()}–${toD.getDate()}`;
-    }
-    return `${formatShortDate(fromD)}–${formatShortDate(toD)}`;
-  }
-  if (from) return `from ${formatShortDate(from)}`;
-  return `until ${formatShortDate(to)}`;
+  if (from && to) return `${formatDateShort(from)}–${formatDateShort(to)}`;
+  if (from) return `from ${formatDateShort(from)}`;
+  return `until ${formatDateShort(to)}`;
 }
 
 function capitalize(str) {
