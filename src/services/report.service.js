@@ -4,6 +4,7 @@ require('../config/env');
 // (Node's standard, documented CJS-consuming-ESM interop) inside withBrowserPage below, rather
 // than a top-level require() here, which would throw a SyntaxError on 'export * from ...'.
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const ExcelJS = require('exceljs');
 const {
@@ -55,19 +56,55 @@ const NASTALIQ_FONT_NAME = 'Noto Nastaliq Urdu';
 const NASTALIQ_WOFF2_BASE64 = fs.readFileSync(path.join(__dirname, '../assets/fonts/NotoNastaliqUrdu-Regular.woff2')).toString('base64');
 const NASTALIQ_TTF_BUFFER = fs.readFileSync(path.join(__dirname, '../assets/fonts/NotoNastaliqUrdu-Regular.ttf'));
 
-// Prompt — PDF/JPEG font-consistency fix: the HTML shell used to list `'Jameel Noori Nastaleeq'`
-// FIRST in the CSS font-family stack, ahead of the actually-embedded `${NASTALIQ_FONT_NAME}`
-// (Noto Nastaliq Urdu) @font-face. That name has no @font-face of its own and isn't installed on
-// Render's container — a font-family entry with nothing backing it is exactly the kind of thing
-// that lets Chromium's (Linux/fontconfig) font matcher substitute an unrelated system font for
-// SOME glyphs/elements rather than reliably falling through to the next stack entry, which is
-// what actually produced the reported inconsistent font/boxes, not a wrong font NAME per se. Fix:
-// the embedded font is @font-face'd directly UNDER the name 'Jameel Noori Nastaleeq' (same file,
-// just aliased), so every CSS reference to that name resolves deterministically to our own
-// embedded data — no name in the stack is ever left unbacked. Scoped to the HTML/PDF/JPEG path
-// only (htmlDocument below); the separate DOCX/XLSX pipelines were not reported broken and keep
-// using NASTALIQ_FONT_NAME/NotoNastaliqUrdu unchanged.
-const PDF_FONT_DISPLAY_NAME = 'Jameel Noori Nastaleeq';
+// Prompt — ROOT-CAUSE fix for the "□ square boxes in the Urdu PDF" bug (PDF-specific — JPEG/DOCX
+// were never affected, which was the exact clue). Inspected the generated PDF's own internal
+// structure with pikepdf/fontTools, not just eyeballing a screenshot: Chromium's Skia PDF backend
+// embeds a normal system font (e.g. Arial, used for <bdi>'s Latin runs) as a real Type0/
+// CIDFontType2 font with genuine outline data — but a font loaded only via @font-face (our
+// Nastaliq WOFF2 data: URI) gets embedded as a Type3 font instead: every individual glyph becomes
+// its own tiny vector-drawing procedure, with NO real cmap/glyf font program backing it. Type3 is
+// fragile — Chrome's own PDF.js viewer tolerates it (which is why testing only that way never
+// showed the bug), but stricter PDF readers render an unrecognized/malformed Type3 CharProc as a
+// missing-glyph box. Verified the fix directly: installing this exact font as a genuine OS font
+// (not @font-face) and re-generating made Chromium embed it as a proper CIDFontType2 with real
+// FontFile2 TrueType data — no Type3, no boxes, confirmed by re-inspecting the PDF's font
+// resources. JAMEEL_NOORI_TTF_BUFFER below is the SAME Noto Nastaliq Urdu font file with only its
+// internal name-table renamed (via fontTools) to 'Jameel Noori Nastaleeq', so installing it under
+// that exact name is honest, not a rebrand of a different font.
+const JAMEEL_NOORI_FONT_NAME = 'Jameel Noori Nastaleeq';
+const JAMEEL_NOORI_TTF_PATH = path.join(__dirname, '../assets/fonts/JameelNooriNastaleeq.ttf');
+const JAMEEL_NOORI_FONTS_DIR = path.dirname(JAMEEL_NOORI_TTF_PATH);
+
+// Prompt — makes Chromium treat the bundled TTF as a genuine installed OS font (see the big
+// comment above for why that's what actually avoids the Type3/box bug), without needing root
+// access to write into /usr/share/fonts or requiring the `fc-cache` CLI tool to exist in
+// production's container at all: fontconfig (which Chromium already links against on Linux to
+// enumerate fonts — that's how it finds Arial/Times New Roman today) reads its config from
+// FONTCONFIG_FILE if that env var is set, and can scan a plain directory listed in <dir> live,
+// with no prebuilt cache required, for a single extra font. <include ignore_missing="yes"> chains
+// in the host's own default config (when present) so every OTHER font Chromium already resolves
+// (fallback serif/sans-serif, Arial, etc.) keeps working exactly as before — this only ADDS one
+// font, it doesn't replace the system's font configuration. <cachedir> points at the OS temp dir
+// (always writable) rather than anywhere under the read-only-in-production font/config paths.
+// Harmless on Windows/macOS dev machines too: those platforms don't use fontconfig, so Chromium
+// simply ignores an env var it has no use for, and CSS falls through to the @font-face-embedded
+// 'Noto Nastaliq Urdu' below instead (unchanged safety net — see htmlDocument's font-family stack
+// and generateDocx's own font embedding, neither of which depend on this).
+function buildFontconfigEnv() {
+  const cacheDir = path.join(os.tmpdir(), 'tms-report-fontconfig-cache');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const fontsConfPath = path.join(os.tmpdir(), 'tms-report-fonts.conf');
+  const fontsConfXml = `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>
+  <dir>${JAMEEL_NOORI_FONTS_DIR}</dir>
+  <cachedir>${cacheDir}</cachedir>
+</fontconfig>
+`;
+  fs.writeFileSync(fontsConfPath, fontsConfXml);
+  return { FONTCONFIG_FILE: fontsConfPath };
+}
 
 const USER_SUMMARY_COLUMNS = ['name', 'responsibility', 'ongoing', 'pending', 'complete', 'closed', 'excellent', 'good', 'fair', 'weak', 'notApplicable', 'total'];
 const USER_SUMMARY_COLUMN_LABELS = {
@@ -95,13 +132,25 @@ const USER_SUMMARY_COLUMN_LABELS = {
 // same array for its own header row, so its hardcoded data-row value order was updated to match —
 // see its own comment — purely to avoid a header/data column mismatch, not a scope expansion.
 const TASK_HEADER_LABELS = ['کوڈ', 'کام کی تفصیل', 'باقی دن', 'آخری تاریخ'];
-// Prompt — still used by generateExcel's own (unchanged, out-of-scope) tabular Updates section;
-// the HTML/PDF/JPEG/DOCX pipelines no longer render this as a table at all (see
-// renderUpdateEntryHtml/docxUpdateEntry below) — the client's manual-report reference shows
-// updates as a chronological conversation (date, author, text), not a spreadsheet-style row, so
-// tکمیل فیصد/اٹیچمنٹ are folded into each entry's own secondary line instead of separate columns.
-const UPDATE_TABLE_LABELS = ['تاریخ', 'رپلائی کرنے والا', 'وضاحت', 'تکمیل فیصد', 'اٹیچمنٹ'];
-const [, , , UPDATE_COMPLETION_LABEL, UPDATE_ATTACHMENT_LABEL] = UPDATE_TABLE_LABELS;
+// Prompt — client's latest, explicit spec: Updates go back to ONE table per task (the
+// card/conversation-block layout from the previous request is gone), with EXACTLY these 4
+// columns — تاریخ, اپڈیٹ کرنے والا ("Updated By", renamed from the older "رپلائی کرنے والا"),
+// وضاحت, تکمیل فیصد. No 5th اٹیچمنٹ column this time; an attachment is folded into the وضاحت
+// cell instead (see renderUpdateRowHtml/docxUpdateRow) — "compact inside the appropriate cell,"
+// per the client's own wording, not dropped.
+//
+// Column order — the client's message gave two different orderings for this table (the numbered
+// list here vs. a separate "RIGHT → LEFT" line that listed the same four columns reversed); this
+// was flagged back to the client and explicitly confirmed: keep the numbered-list order below
+// (تاریخ→اپڈیٹ کرنے والا→وضاحت→تکمیل فیصد, i.e. when → who → what → completion), matching this
+// project's established "first array element = rightmost column" convention.
+const UPDATE_TABLE_LABELS = ['تاریخ', 'اپڈیٹ کرنے والا', 'وضاحت', 'تکمیل فیصد'];
+const UPDATE_ATTACHMENT_LABEL = 'اٹیچمنٹ';
+// Prompt — generateExcel's own Updates table was NOT part of this request (Excel hasn't been
+// mentioned in any of the last several report-generation prompts) and keeps its original,
+// unrelated 5-column shape/wording untouched, under its own name so it no longer shares (and
+// can't accidentally be broken by changes to) the constant every other format now uses.
+const EXCEL_UPDATE_TABLE_LABELS = ['تاریخ', 'رپلائی کرنے والا', 'وضاحت', 'تکمیل فیصد', 'اٹیچمنٹ'];
 const UPDATES_HEADING = 'اپڈیٹس';
 const ASSIGNEE_LABEL = 'ذمہ دار';
 const RESPONSIBILITY_LABEL = 'ذمہ داری';
@@ -109,7 +158,8 @@ const BRAND_TITLE = 'ٹاسک مینجمنٹ سسٹم';
 const GENERATED_BY_LABEL = 'رپورٹ جنریٹ کرنے والا';
 const GENERATED_AT_LABEL = 'رپورٹ کی تاریخ';
 const EMPTY_UPDATES_TEXT = 'کوئی اپڈیٹ نہیں';
-const REPORT_COLUMN_COUNT = UPDATE_TABLE_LABELS.length; // the widest of the two tables — used for merges/spans
+// Excel-only merge-span width (its own Updates table, untouched, is still 5 columns wide).
+const REPORT_COLUMN_COUNT = EXCEL_UPDATE_TABLE_LABELS.length;
 
 function resolveColumns(requested, allColumns) {
   if (!requested || requested.length === 0) return allColumns;
@@ -306,16 +356,18 @@ async function buildReportData(requestingUser, filters, { lastUpdateOnly } = {})
   return { groups, lastUpdateOnly: Boolean(lastUpdateOnly) };
 }
 
-// Shared HTML shell. Prompt — @font-face embeds the actual Nastaliq font file as a base64 data:
-// URI (no network fetch, no disk read at render time — same reasoning as the logo <img> below),
-// aliased directly under the name 'Jameel Noori Nastaleeq' (PDF_FONT_DISPLAY_NAME — see its own
-// comment above) so every Urdu element resolves to this ONE embedded face deterministically; there
-// is no longer a second/fallback name in the stack for Chromium's font matcher to substitute
-// something else for. waitUntil:'load' (see generatePdf/generateJpeg) stays fine for the same
-// reason as before — the font is inlined, not fetched — but generatePdf/generateJpeg now also
-// explicitly await `document.fonts.ready` before capturing, since 'load' firing is not the same
-// guarantee as the @font-face's glyph data having actually finished decoding — see those
-// functions' own comments.
+// Shared HTML shell. Prompt — layered Urdu font strategy (see buildFontconfigEnv's own comment
+// for the full root-cause story): 'Jameel Noori Nastaleeq' is installed as a genuine OS font at
+// launch time, which is what actually gets Chromium's PDF backend to embed it as a real font
+// instead of the fragile per-glyph Type3 fallback that caused the □ boxes. The @font-face below
+// (base64 data: URI, no network fetch) stays as a SAFETY NET under the separate name
+// '${NASTALIQ_FONT_NAME}' — if the OS-font install ever doesn't apply (e.g. a platform without
+// fontconfig), the stack still falls through to a working, correctly-shaped Nastaliq render; it
+// just goes back to risking the Type3/box issue specifically in non-Chromium-PDF.js PDF readers,
+// same as before this fix, never worse. waitUntil:'load' (see generatePdf/generateJpeg) stays
+// fine for the same reason as before — the @font-face font is inlined, not fetched — but
+// generatePdf/generateJpeg also await `document.fonts.ready` before capturing, since 'load' firing
+// isn't the same guarantee as the embedded glyph data having actually finished decoding.
 //
 // Prompt — the branded header/table styling below is scoped under `.task-report` on purpose:
 // this shell is shared with renderUserSummaryHtml (a separate, untouched report), and bare
@@ -328,7 +380,7 @@ function htmlDocument(title, bodyHtml) {
 <title>${escapeHtml(title)}</title>
 <style>
   @font-face {
-    font-family: '${PDF_FONT_DISPLAY_NAME}';
+    font-family: '${NASTALIQ_FONT_NAME}';
     src: url(data:font/woff2;base64,${NASTALIQ_WOFF2_BASE64}) format('woff2');
     font-weight: normal;
     font-style: normal;
@@ -341,7 +393,7 @@ function htmlDocument(title, bodyHtml) {
      than Naskh/Latin text at the same font-size or ascenders/descenders from adjacent lines visibly
      crowd each other (caught by zooming into a generated PDF, not by reading this CSS); this is a
      line-height fix, not a font-size one — font-size stays untouched everywhere in this document. */
-  body { font-family: '${PDF_FONT_DISPLAY_NAME}', serif; direction: rtl; margin: 24px; background: #fff; line-height: 2; }
+  body { font-family: '${JAMEEL_NOORI_FONT_NAME}', '${NASTALIQ_FONT_NAME}', serif; direction: rtl; margin: 24px; background: #fff; line-height: 2; }
   /* Found by zooming into a generated image, not by reading this CSS: the Nastaliq font's own
      shaping silently drops the space between a digit and the following Latin letter at a <bdi>
      isolation boundary — "09 Sep 26" rendered as "09Sep 26". <bdi> only ever wraps Latin/numeric
@@ -369,17 +421,22 @@ function htmlDocument(title, bodyHtml) {
   .task-report table.task-header th:nth-child(3), .task-report table.task-header td:nth-child(3),
   .task-report table.task-header th:nth-child(4), .task-report table.task-header td:nth-child(4) { width: 20%; white-space: nowrap; }
 
-  /* Prompt — replaces the old 5-column "Updates" TABLE: the client's manual-report reference
-     shows each update as a chronological conversation entry (date + author, then the actual
-     text), not a spreadsheet row — see renderUpdateEntryHtml. break-inside/page-break-inside:
-     avoid on both this and table.task-header (below) keep a task's header row and each update
-     entry from being ugly-split across a PDF page boundary (Section 10's "prefer to stay
-     together"); this only ever affects ONE row/box at a time, so a genuinely long report still
-     flows across pages normally — nothing is clipped to force a single page. */
-  .task-report .update-entry { border: 1px solid #ccc; border-radius: 4px; padding: 8px 10px; margin-bottom: 8px; break-inside: avoid; page-break-inside: avoid; }
-  .task-report .update-entry .update-meta { margin: 0 0 4px; font-weight: bold; color: #${BRAND_GREEN}; }
-  .task-report .update-entry .update-text { margin: 0; white-space: pre-wrap; }
-  .task-report .update-entry .update-extra { margin: 4px 0 0; font-size: 11px; color: #666; }
+  /* Prompt — back to ONE table per task for Updates (the client's previous request had this as
+     chronological cards; this request reverses that back to a table — see renderUpdateRowHtml).
+     break-inside/page-break-inside: avoid is on the ROW, not the whole table, so a task with many
+     updates still paginates normally across pages (Section 10's "tables should continue naturally
+     across pages") — only a single row is ever kept from being ugly-split mid-row. table.task-
+     header (below) keeps its own avoid rule since it's always just 2 rows total. The table-head
+     row repeats automatically at the top of each page this table's body spans across — standard
+     Chromium print behavior, needs no extra CSS. */
+  .task-report table.updates-table tr { break-inside: avoid; page-break-inside: avoid; }
+  .task-report table.updates-table th:nth-child(1), .task-report table.updates-table td:nth-child(1) { width: 13%; white-space: nowrap; }
+  .task-report table.updates-table th:nth-child(2), .task-report table.updates-table td:nth-child(2) { width: 16%; }
+  .task-report table.updates-table th:nth-child(4), .task-report table.updates-table td:nth-child(4) { width: 12%; white-space: nowrap; }
+  /* اٹیچمنٹ folded into the وضاحت cell as a compact secondary line (client's own "display it
+     compactly inside the appropriate table cell instead of creating a separate large card") —
+     this is what the client's 4-locked-column spec pushed it into, not a 5th column. */
+  .task-report .update-attachment { margin-top: 4px; font-size: 11px; color: #666; }
   .task-report p.empty-updates { color: #777; margin: 4px 0 16px; }
 
   .task-report .brand-header { text-align: center; margin-bottom: 12px; }
@@ -419,23 +476,29 @@ function attachmentCellHtml(attachment) {
   return attachment.url ? `<a href="${escapeHtml(attachment.url)}">${bdi(label)}</a>` : bdi(label);
 }
 
-// Prompt — replaces the old <tr> table-row-per-update rendering: the client's manual-report
-// reference shows each update as its own chronological conversation entry — date + author on one
-// line, the actual update text below it — not a spreadsheet row. تکمیل فیصد/اٹیچمنٹ (previously
-// their own table columns) are folded into a compact secondary line so neither is silently
-// dropped from the visual report; the underlying data itself is completely unchanged (see
-// buildReportData — only the DISPLAY order/shape changed, never what's fetched or stored).
-function renderUpdateEntryHtml(update) {
-  const extraParts = [`${escapeHtml(UPDATE_COMPLETION_LABEL)}: ${bdi(`${update.completionPercent}%`)}`];
-  if (update.attachment) {
-    extraParts.push(`${escapeHtml(UPDATE_ATTACHMENT_LABEL)}: ${attachmentCellHtml(update.attachment)}`);
+// Prompt — back to one <tr> per update (see UPDATE_TABLE_LABELS' own comment for the column
+// set/order and the flagged RIGHT→LEFT ambiguity). اٹیچمنٹ has no column of its own this time —
+// folded into the وضاحت cell as a compact secondary line, never dropped.
+function renderUpdateRowHtml(update) {
+  const attachmentHtml = update.attachment
+    ? `<div class="update-attachment">${escapeHtml(UPDATE_ATTACHMENT_LABEL)}: ${attachmentCellHtml(update.attachment)}</div>`
+    : '';
+  return `<tr>
+<td>${bdi(escapeHtml(formatDateShort(update.createdAt)))}</td>
+<td>${bdi(escapeHtml(update.updatedBy?.name ?? '-'))}</td>
+<td>${bdi(escapeHtml(update.description))}${attachmentHtml}</td>
+<td>${bdi(`${update.completionPercent}%`)}</td>
+</tr>`;
+}
+
+function renderUpdatesTableHtml(updates) {
+  if (updates.length === 0) {
+    return `<p class="empty-updates">${escapeHtml(EMPTY_UPDATES_TEXT)}</p>`;
   }
-  return `
-<div class="update-entry">
-<p class="update-meta">${bdi(escapeHtml(formatDateShort(update.createdAt)))} — ${bdi(escapeHtml(update.updatedBy?.name ?? '-'))}</p>
-<p class="update-text">${bdi(escapeHtml(update.description))}</p>
-<p class="update-extra">${extraParts.join(' · ')}</p>
-</div>`;
+  return `<table class="updates-table">
+<thead><tr>${UPDATE_TABLE_LABELS.map((l) => `<th>${escapeHtml(l)}</th>`).join('')}</tr></thead>
+<tbody>${updates.map((u) => renderUpdateRowHtml(u)).join('')}</tbody>
+</table>`;
 }
 
 // Prompt — every task in a Zimmedar's section prints its OWN "کوڈ | کام کی تفصیل | باقی دن |
@@ -447,10 +510,6 @@ function renderUpdateEntryHtml(update) {
 // own cell order matches TASK_HEADER_LABELS' locked order exactly: کوڈ, کام کی تفصیل, باقی دن
 // (remaining days), آخری تاریخ (deadline) — note remaining-days now comes BEFORE deadline.
 function renderTaskBlockHtml(task, updates, { indexInGroup, groupTaskCount }) {
-  const updatesHtml =
-    updates.length > 0
-      ? updates.map((u) => renderUpdateEntryHtml(u)).join('')
-      : `<p class="empty-updates">${escapeHtml(EMPTY_UPDATES_TEXT)}</p>`;
   const displayTitle = formatTaskTitleForDisplay(task.title, indexInGroup, groupTaskCount);
 
   return `
@@ -464,7 +523,7 @@ function renderTaskBlockHtml(task, updates, { indexInGroup, groupTaskCount }) {
 </tr></tbody>
 </table>
 <h4 class="updates-heading">${escapeHtml(UPDATES_HEADING)}</h4>
-${updatesHtml}`;
+${renderUpdatesTableHtml(updates)}`;
 }
 
 // docs/06-backend.md §9 (rewritten) — builds the HTML string rendered by generatePdf/generateJpeg.
@@ -567,6 +626,9 @@ async function withBrowserPage(step, fn) {
   const { default: puppeteer } = await import('puppeteer');
   const launchOptions = {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    // See buildFontconfigEnv's own comment — this is the actual fix for the Type3/□-boxes bug,
+    // not the @font-face embedding alone.
+    env: { ...process.env, ...buildFontconfigEnv() },
   };
   let browser;
   try {
@@ -781,7 +843,7 @@ async function generateExcel(data, { headerInfo }) {
       }
 
       addMergedRow(UPDATES_HEADING, { italic: true, color: `FF${BRAND_GREEN}` });
-      addDataRow(UPDATE_TABLE_LABELS, { header: true });
+      addDataRow(EXCEL_UPDATE_TABLE_LABELS, { header: true });
 
       if (updates.length === 0) {
         addMergedRow(EMPTY_UPDATES_TEXT);
@@ -883,58 +945,61 @@ function docxTaskHeaderTable(task, { indexInGroup, groupTaskCount } = {}) {
   });
 }
 
-// Prompt — replaces the old 5-column docxUpdatesTable: same reasoning as renderUpdateEntryHtml
-// (see its own comment) — the client's manual-report reference shows updates as a chronological
-// conversation, not a spreadsheet. Each entry is built as ONE Paragraph (meta line, then the
-// update text, then تکمیل فیصد/اٹیچمنٹ, joined with manual line breaks via `break: 1`) so a single
-// `border` on that one paragraph draws a unified box around the whole entry — Word paragraph
-// borders apply per-paragraph, so three separate paragraphs would have drawn three separate boxes
-// instead of the one continuous box the HTML/PDF/JPEG version uses (see .update-entry's own CSS
-// comment). keepLines keeps this one paragraph from breaking across a page (Section 10).
-// Prompt — found by opening the actual Word-rendered PDF, not by reading the XML: combining a
-// digit/Latin value (date, "40%", a filename) and its Urdu label in ONE run let Word's bidi
-// algorithm reorder them within the paragraph — "تکمیل فیصد: 25%" came out with the "25%" run
-// repositioned. HTML's <bdi> isolates exactly this case (see bdi()'s own comment); docx's per-run
-// `rightToLeft: false` is the equivalent isolation at the OOXML level — every digit/Latin VALUE
-// below is its own run with `rightToLeft: false`, every Urdu LABEL stays a plain (paragraph-
-// default RTL) run, matching the codebase's established bdi-only-wraps-values convention.
-function docxUpdateEntry(update) {
-  const border = { style: BorderStyle.SINGLE, size: 4, color: 'CCCCCC', space: 4 };
-  const children = [
-    new TextRun({ text: formatDateShort(update.createdAt), bold: true, rightToLeft: false, color: BRAND_GREEN, font: NASTALIQ_FONT_NAME }),
-    new TextRun({ text: ' — ', bold: true, color: BRAND_GREEN, font: NASTALIQ_FONT_NAME }),
-    new TextRun({ text: update.updatedBy?.name || '-', bold: true, color: BRAND_GREEN, font: NASTALIQ_FONT_NAME }),
-    new TextRun({ text: update.description || '', break: 1, font: NASTALIQ_FONT_NAME }),
-    new TextRun({ text: `${UPDATE_COMPLETION_LABEL}: `, break: 1, size: 18, color: '666666', font: NASTALIQ_FONT_NAME }),
-    new TextRun({ text: `${update.completionPercent}%`, rightToLeft: false, size: 18, color: '666666', font: NASTALIQ_FONT_NAME }),
-  ];
+// Prompt — back to one table per task for Updates (mirrors renderUpdatesTableHtml — see
+// UPDATE_TABLE_LABELS' own comment for the column set/order and the flagged RIGHT→LEFT
+// ambiguity). Same `visuallyRightToLeft: true` reasoning as docxTaskHeaderTable — column order is
+// a table-level OOXML property, not something paragraph-level `bidirectional` affects.
+// tableHeader: true on the header row makes Word automatically repeat "تاریخ | اپڈیٹ کرنے والا |
+// وضاحت | تکمیل فیصد" at the top of every page this table's body spans — the client's own "table
+// headers should remain visually clear" across a multi-page Updates table, with zero extra CSS-
+// equivalent needed (native Word table feature). cantSplit on each data row keeps a single update
+// from being cut mid-row across a page, while the table as a whole still paginates normally.
+function docxUpdateDescriptionCell(update) {
+  const children = [new Paragraph({ bidirectional: true, children: [new TextRun({ text: update.description || '-', font: NASTALIQ_FONT_NAME })] })];
   if (update.attachment) {
-    children.push(new TextRun({ text: ` · ${UPDATE_ATTACHMENT_LABEL}: `, size: 18, color: '666666', font: NASTALIQ_FONT_NAME }));
+    const extraChildren = [new TextRun({ text: `${UPDATE_ATTACHMENT_LABEL}: `, size: 16, color: '666666', font: NASTALIQ_FONT_NAME })];
     if (update.attachment.url) {
-      children.push(
+      extraChildren.push(
         new ExternalHyperlink({
           link: update.attachment.url,
-          children: [new TextRun({ text: attachmentLabel(update.attachment), style: 'Hyperlink', rightToLeft: false, size: 18, font: NASTALIQ_FONT_NAME })],
+          children: [new TextRun({ text: attachmentLabel(update.attachment), style: 'Hyperlink', rightToLeft: false, size: 16, font: NASTALIQ_FONT_NAME })],
         })
       );
     } else {
-      children.push(new TextRun({ text: attachmentLabel(update.attachment), rightToLeft: false, size: 18, color: '666666', font: NASTALIQ_FONT_NAME }));
+      extraChildren.push(new TextRun({ text: attachmentLabel(update.attachment), rightToLeft: false, size: 16, color: '666666', font: NASTALIQ_FONT_NAME }));
     }
+    children.push(new Paragraph({ bidirectional: true, children: extraChildren }));
   }
-  return new Paragraph({
-    bidirectional: true,
-    keepLines: true,
-    spacing: { after: 160 },
-    border: { top: border, bottom: border, left: border, right: border },
-    children,
+  return new TableCell({ children });
+}
+
+function docxUpdateRow(update) {
+  return new TableRow({
+    cantSplit: true,
+    children: [docxCell(formatDateShort(update.createdAt)), docxCell(update.updatedBy?.name || '-'), docxUpdateDescriptionCell(update), docxCell(`${update.completionPercent}%`)],
   });
 }
 
-function docxUpdateEntries(updates) {
+function docxUpdatesTable(updates) {
+  const headerRow = new TableRow({ tableHeader: true, children: UPDATE_TABLE_LABELS.map((l) => docxCell(l, { header: true })) });
   if (updates.length === 0) {
-    return [new Paragraph({ bidirectional: true, children: [new TextRun({ text: EMPTY_UPDATES_TEXT, color: '777777', font: NASTALIQ_FONT_NAME })] })];
+    return new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      visuallyRightToLeft: true,
+      rows: [
+        headerRow,
+        new TableRow({
+          children: [
+            new TableCell({
+              columnSpan: UPDATE_TABLE_LABELS.length,
+              children: [new Paragraph({ bidirectional: true, alignment: AlignmentType.CENTER, children: [new TextRun({ text: EMPTY_UPDATES_TEXT, font: NASTALIQ_FONT_NAME })] })],
+            }),
+          ],
+        }),
+      ],
+    });
   }
-  return updates.map((u) => docxUpdateEntry(u));
+  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, visuallyRightToLeft: true, rows: [headerRow, ...updates.map((u) => docxUpdateRow(u))] });
 }
 
 // Prompt — filterDescription paragraph omitted entirely when it's just "All Data" (no filter
@@ -1015,7 +1080,7 @@ async function generateDocx(data, { headerInfo }) {
           children: [new TextRun({ text: UPDATES_HEADING, color: BRAND_GREEN, bold: true, font: NASTALIQ_FONT_NAME })],
         })
       );
-      children.push(...docxUpdateEntries(updates));
+      children.push(docxUpdatesTable(updates));
       children.push(new Paragraph({ children: [] })); // spacer between tasks
     });
   });

@@ -252,7 +252,7 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
     expect(html).toContain('<bdi>09 Sep 26</bdi>');
   });
 
-  it('renders an assignee header (with the exact ذمہ دار/ذمہ داری labels), task header row, and اپڈیٹس conversation entries, per group/task', () => {
+  it('renders an assignee header (with the exact ذمہ دار/ذمہ داری labels), task header row, and an اپڈیٹس table, per group/task', () => {
     const groups = [
       {
         assignee: { id: 'u1', name: 'Ali', responsibility: 'IT' },
@@ -280,9 +280,83 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
     expect(html).toContain('40%');
     // exact, LOCKED Urdu column labels/order for the task-summary table.
     ['کوڈ', 'کام کی تفصیل', 'باقی دن', 'آخری تاریخ'].forEach((label) => expect(html).toContain(label));
-    // Updates are a chronological conversation now (date/author/text), not a labeled table — only
-    // تکمیل فیصد (folded into each entry's own secondary line) still appears as a literal label.
-    expect(html).toContain('تکمیل فیصد');
+    // Updates render as ONE table again (client's latest request reverses the previous
+    // card/conversation-block layout) — exactly these 4 columns, in this order, no 5th column.
+    expect(html).toContain('<table class="updates-table">');
+    expect(html).toMatch(/<thead><tr><th>تاریخ<\/th><th>اپڈیٹ کرنے والا<\/th><th>وضاحت<\/th><th>تکمیل فیصد<\/th><\/tr><\/thead>/);
+    expect(html).not.toContain('<th>اٹیچمنٹ</th>');
+  });
+
+  it('folds an attachment into the وضاحت cell as a compact secondary line instead of a separate column', () => {
+    const groups = [
+      {
+        assignee: { id: 'u1', name: 'Ali', responsibility: 'IT' },
+        tasks: [
+          {
+            task: { codeNumber: '1', title: 'T', deadline: new Date(), timeStatus: { type: 'remaining', days: 1 } },
+            updates: [
+              {
+                createdAt: new Date('2026-08-20'),
+                updatedBy: { name: 'Ali' },
+                description: 'Done',
+                completionPercent: 100,
+                attachment: { fileName: 'receipt.pdf', url: 'https://example.com/receipt.pdf' },
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const html = reportService.renderReportHtml(groups, { headerInfo: SAMPLE_HEADER_INFO });
+
+    expect(html).toContain('class="update-attachment"');
+    expect(html).toContain('اٹیچمنٹ:');
+    expect(html).toContain('href="https://example.com/receipt.pdf"');
+    expect(html).toContain('receipt.pdf');
+    // No attachment at all still renders cleanly, no leftover ".update-attachment" markup.
+    const noAttachmentHtml = reportService.renderReportHtml(
+      [
+        {
+          assignee: { id: 'u1', name: 'Ali', responsibility: 'IT' },
+          tasks: [
+            {
+              task: { codeNumber: '1', title: 'T', deadline: new Date(), timeStatus: { type: 'remaining', days: 1 } },
+              updates: [{ createdAt: new Date(), updatedBy: { name: 'Ali' }, description: 'Done', completionPercent: 100, attachment: null }],
+            },
+          ],
+        },
+      ],
+      { headerInfo: SAMPLE_HEADER_INFO }
+    );
+    // Slice off the <style> block first — it declares the ".update-attachment" CSS rule
+    // unconditionally, so checking the full document would always "find" the class name.
+    const noAttachmentBodyHtml = noAttachmentHtml.slice(noAttachmentHtml.indexOf('<body>'));
+    expect(noAttachmentBodyHtml).not.toContain('update-attachment');
+  });
+
+  it('keeps updates chronological (oldest first) and never merges multiple updates into one row', () => {
+    const groups = [
+      {
+        assignee: { id: 'u1', name: 'Ali', responsibility: 'IT' },
+        tasks: [
+          {
+            task: { codeNumber: '1', title: 'T', deadline: new Date(), timeStatus: { type: 'remaining', days: 1 } },
+            updates: [
+              { createdAt: new Date('2026-08-01'), updatedBy: { name: 'Ali' }, description: 'First message', completionPercent: 10, attachment: null },
+              { createdAt: new Date('2026-08-15'), updatedBy: { name: 'Ali' }, description: 'Second message', completionPercent: 50, attachment: null },
+            ],
+          },
+        ],
+      },
+    ];
+
+    const html = reportService.renderReportHtml(groups, { headerInfo: SAMPLE_HEADER_INFO });
+    const rowMatches = [...html.matchAll(/<tr>(?:(?!<\/tr>).)*?<\/tr>/gs)].map((m) => m[0]);
+    const updateRows = rowMatches.filter((r) => r.includes('First message') || r.includes('Second message'));
+
+    expect(updateRows).toHaveLength(2); // one <tr> per update, never merged
+    expect(html.indexOf('First message')).toBeLessThan(html.indexOf('Second message')); // oldest first
   });
 
   it('shows "کوئی اپڈیٹ نہیں" (Prompt — was English "No updates yet") for a task with an empty updates array', () => {
@@ -304,20 +378,19 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
   it('embeds the real Nastaliq font via @font-face as a base64 data: URI (no network fetch, no reliance on a viewer/server having it installed)', () => {
     const html = reportService.renderReportHtml([], { headerInfo: SAMPLE_HEADER_INFO });
     expect(html).toContain('@font-face');
-    expect(html).toContain("font-family: 'Jameel Noori Nastaleeq'");
+    expect(html).toContain("font-family: 'Noto Nastaliq Urdu'");
     expect(html).toContain('data:font/woff2;base64,');
   });
 
-  // Prompt — the reported "inconsistent font / boxes in the PDF" bug traced back to the body's
-  // font-family stack naming 'Jameel Noori Nastaleeq' with no @font-face backing it (a separate,
-  // actually-embedded 'Noto Nastaliq Urdu' face came second) — an unbacked name in the stack is
-  // exactly what let Chromium's font matcher substitute something else for some glyphs/elements.
-  // The fix aliases the ONE embedded face directly under 'Jameel Noori Nastaleeq', so body must
-  // reference that same name and nothing else — no second/fallback Nastaliq name left in the mix.
-  it('applies the SAME embedded font name consistently — body never falls back to a second, unbacked Nastaliq name', () => {
+  // Prompt — root-caused the "□ boxes in the Urdu PDF" bug to Chromium's PDF export embedding an
+  // @font-face-only web font as a fragile per-glyph Type3 font instead of a real CIDFontType2 one
+  // (verified by inspecting the actual generated PDF's font resources — see report.service.js's
+  // own comment on buildFontconfigEnv). The fix installs 'Jameel Noori Nastaleeq' as a genuine OS
+  // font at Puppeteer-launch time; body must try that name FIRST, with the @font-face-embedded
+  // 'Noto Nastaliq Urdu' kept as an explicit fallback in case the OS-install doesn't apply.
+  it('tries the OS-installed font name first, with the @font-face-embedded font as an explicit fallback (not the only name in the stack)', () => {
     const html = reportService.renderReportHtml([], { headerInfo: SAMPLE_HEADER_INFO });
-    expect(html).toMatch(/body\s*\{[^}]*font-family:\s*'Jameel Noori Nastaleeq',\s*serif/);
-    expect(html).not.toContain('Noto Nastaliq Urdu');
+    expect(html).toMatch(/body\s*\{[^}]*font-family:\s*'Jameel Noori Nastaleeq',\s*'Noto Nastaliq Urdu',\s*serif/);
   });
 
   it('prints the column-header row ("کوڈ | کام کی تفصیل | باقی دن | آخری تاریخ") for EVERY task in a Zimmedar section, not just the first', () => {
@@ -335,8 +408,9 @@ describe('renderReportHtml (pure — grouped structure, branded header, exact Ur
     // The column header text appears once per task — 3 tasks, 3 <thead> rows.
     const codeHeaderOccurrences = bodyHtml.split('کوڈ').length - 1;
     expect(codeHeaderOccurrences).toBe(3);
-    // Updates are no longer a table (see renderUpdateEntryHtml) — only the task-header table has
-    // a <thead>, so 3 tasks = 3 <thead> total.
+    // Each of these 3 tasks has an EMPTY updates array, which renders as a plain "کوئی اپڈیٹ
+    // نہیں" paragraph, not a table (see renderUpdatesTableHtml) — so only the task-header table's
+    // own thead contributes here: 3 tasks = 3 table-head rows total.
     expect(html.match(/<thead>/g)).toHaveLength(3);
     // Every task's own data still renders.
     expect(html).toContain('<bdi>1</bdi>');
@@ -628,7 +702,7 @@ describe('generateDocx (docx package, real generation)', () => {
   // tag is present on the generated table, not just that the document "looks" RTL. Updates are no
   // longer rendered as a table at all (see docxUpdateEntry) — only the one task-header table
   // exists per task now, so a single task's report has exactly 1 bidiVisual table.
-  it('sets genuine OOXML table-direction RTL (<w:bidiVisual/>) on the task-header table, not just paragraph-level bidi', async () => {
+  it('sets genuine OOXML table-direction RTL (<w:bidiVisual/>) on BOTH the task-header and Updates tables, not just paragraph-level bidi', async () => {
     const admin = await makeAdmin();
     const assignee = await makeUser({ name: 'Ali' });
     const lookup = await makeLookup();
@@ -640,8 +714,10 @@ describe('generateDocx (docx package, real generation)', () => {
     const zip = await JSZip.loadAsync(buffer);
     const documentXml = await zip.file('word/document.xml').async('string');
 
+    // One task-header table + one Updates table (still a table even with zero updates — see
+    // docxUpdatesTable's empty-state branch) = 2 tables, both genuinely RTL.
     const bidiVisualOccurrences = documentXml.split('bidiVisual').length - 1;
-    expect(bidiVisualOccurrences).toBe(1);
+    expect(bidiVisualOccurrences).toBe(2);
   });
 
   it('shows "کوئی اپڈیٹ نہیں" (Prompt — was English "No updates yet") for a task with no updates', async () => {
