@@ -6,9 +6,11 @@ const env = require('../../src/config/env');
 const { connect, closeDatabase, clearDatabase } = require('../helpers/db');
 const User = require('../../src/models/User');
 const LookupList = require('../../src/models/LookupList');
+const Task = require('../../src/models/Task');
 const Notification = require('../../src/models/Notification');
 const NotificationBatch = require('../../src/models/NotificationBatch');
 const taskService = require('../../src/services/task.service');
+const emailService = require('../../src/services/email.service');
 
 beforeAll(async () => connect());
 afterEach(async () => clearDatabase());
@@ -317,5 +319,63 @@ describe('regression — Phase 3 trigger-reminders endpoint is unaffected by the
     const res = await request(app).post('/api/v1/admin/trigger-reminders').set('Authorization', `Bearer ${tokenFor(admin)}`);
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveProperty('remindersSent');
+  });
+});
+
+describe('POST /api/v1/admin/trigger-reminders — Phase 3: now runs the automatic reminder engine (§24 H)', () => {
+  it('genuinely creates an automatic notification for an eligible task via the new reminder engine', async () => {
+    const admin = await makeAdmin();
+    const user = await makeUser();
+    const task = await makeTask(admin, [user]); // helper's fixed deadline is +5 days — outside the window
+    // Put the task in the DUE_TOMORROW window so the trigger has something real to create.
+    await Task.findByIdAndUpdate(task.id, { deadline: new Date(Date.now() + 1 * 24 * 60 * 60 * 1000) });
+
+    const res = await request(app)
+      .post('/api/v1/admin/trigger-reminders')
+      .set('Authorization', `Bearer ${tokenFor(admin)}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.remindersSent).toBe(1);
+    const notification = await Notification.findOne({ taskId: task._id, recipientUserId: user._id });
+    expect(notification).not.toBeNull();
+    expect(notification.type).toBe('TASK_DUE_TOMORROW');
+    expect(notification.source).toBe('system');
+  });
+
+  it('does not notify an admin assignee, and does not double-notify on a second trigger the same day', async () => {
+    const admin = await makeAdmin();
+    const user = await makeUser();
+    const assignedAdmin = await makeAdmin();
+    const task = await makeTask(admin, [user, assignedAdmin]);
+    await Task.findByIdAndUpdate(task.id, { deadline: new Date(Date.now() + 1 * 24 * 60 * 60 * 1000) });
+
+    const first = await request(app)
+      .post('/api/v1/admin/trigger-reminders')
+      .set('Authorization', `Bearer ${tokenFor(admin)}`);
+    const second = await request(app)
+      .post('/api/v1/admin/trigger-reminders')
+      .set('Authorization', `Bearer ${tokenFor(admin)}`);
+
+    expect(first.body.data.remindersSent).toBe(1);
+    expect(second.body.data.remindersSent).toBe(0); // already sent today, not re-counted as "sent"
+    expect(await Notification.countDocuments({ taskId: task._id, recipientUserId: user._id })).toBe(1);
+    expect(await Notification.countDocuments({ taskId: task._id, recipientUserId: assignedAdmin._id })).toBe(0);
+  });
+
+  it('sends no email — the new automatic reminder path never calls email.service.js', async () => {
+    const soonSpy = jest.spyOn(emailService, 'sendDeadlineSoonEmail');
+    const overdueSpy = jest.spyOn(emailService, 'sendOverdueEmail');
+
+    const admin = await makeAdmin();
+    const user = await makeUser();
+    const task = await makeTask(admin, [user]);
+    await Task.findByIdAndUpdate(task.id, { deadline: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) });
+
+    await request(app).post('/api/v1/admin/trigger-reminders').set('Authorization', `Bearer ${tokenFor(admin)}`);
+
+    expect(soonSpy).not.toHaveBeenCalled();
+    expect(overdueSpy).not.toHaveBeenCalled();
+    soonSpy.mockRestore();
+    overdueSpy.mockRestore();
   });
 });

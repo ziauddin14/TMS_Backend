@@ -24,7 +24,12 @@ function assertValidType(type) {
 // task+recipient+Pakistan-day," not an error — returns the existing row instead of throwing. This
 // is an atomic, database-level guarantee, not a check-then-insert race (locked blueprint §5).
 // Admin-sourced calls never pass a dedupKey, so this branch never applies to them.
-async function createNotification({
+//
+// Shared by createNotification and Phase 3's createSystemNotification below (the one place the
+// E11000/dedupKey branch is handled) — returns { notification, created } so a caller that needs
+// to know which branch happened (the automatic reminder engine, tallying notificationsCreated vs
+// notificationsAlreadySent) can, without ever doing its own findOne-then-create.
+async function createOrDetectDuplicate({
   recipientUserId,
   type,
   title,
@@ -41,7 +46,7 @@ async function createNotification({
   // correctly skip it; see Notification.js's own comment on why `default: null` was wrong here.
   const resolvedDedupKey = dedupKey || undefined;
   try {
-    return await Notification.create({
+    const notification = await Notification.create({
       recipientUserId,
       type,
       title,
@@ -52,12 +57,29 @@ async function createNotification({
       dedupKey: resolvedDedupKey,
       metadata,
     });
+    return { notification, created: true };
   } catch (err) {
     if (err.code === 11000 && resolvedDedupKey) {
-      return Notification.findOne({ dedupKey: resolvedDedupKey });
+      return { notification: await Notification.findOne({ dedupKey: resolvedDedupKey }), created: false };
     }
     throw err;
   }
+}
+
+async function createNotification(payload) {
+  const { notification } = await createOrDetectDuplicate(payload);
+  return notification;
+}
+
+// Locked blueprint §12/§13 (Phase 3) — the automatic reminder engine's own entry point into this
+// module; the engine "MUST NOT directly call Notification.create()" and "MUST use the existing
+// Phase 1 notification.service.js" (still true here — same model, same unique sparse dedupKey
+// index, same createOrDetectDuplicate path as createNotification, never a second creation path).
+// It exists only to surface `created`, which createNotification's existing callers (Phase 1/2)
+// never needed and whose signature/behavior therefore stays completely unchanged. Always
+// source:'system', createdBy:null — automatic reminders are never attributed to an admin.
+async function createSystemNotification(payload) {
+  return createOrDetectDuplicate({ ...payload, source: 'system', createdBy: null });
 }
 
 // Bulk fan-out helper for a future caller resolving multiple recipients in one action (Phase 2's
@@ -327,6 +349,7 @@ async function listAdminHistory({ page, limit }) {
 
 module.exports = {
   createNotification,
+  createSystemNotification,
   createNotifications,
   listForUser,
   getUnreadCount,

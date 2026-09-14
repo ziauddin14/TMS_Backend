@@ -1,15 +1,20 @@
-const reminderJob = require('../jobs/reminder.job');
+const reminderEngineService = require('../services/reminder-engine.service');
 const notificationService = require('../services/notification.service');
 const asyncHandler = require('../utils/asyncHandler');
 const { sendSuccess } = require('../utils/apiResponse');
 
-// POST /admin/trigger-reminders — docs/05-apis.md §10. Calls the exact same runReminderScan the
-// cron schedule calls (docs/06-backend.md §8) — not a parallel/duplicate implementation. Phase 3
-// infrastructure — untouched by the Phase 2 additions below (locked blueprint §5/§19: this stays
-// "manually run the automatic reminder scan," a distinct action from the new manual composer).
+// POST /admin/trigger-reminders — docs/05-apis.md §10. Phase 3: now runs the automatic reminder
+// engine (Scheduler -> reminder-engine.service.js -> notification.service.js -> Notification
+// collection -> existing Bell/Drawer) instead of the old email-only reminder.job.js path — the
+// exact same engine a production scheduler invokes, not a parallel/duplicate implementation. The
+// route/response CONTRACT is preserved (`{ remindersSent }`) so the existing frontend trigger
+// button and its own regression test keep working unmodified; `remindersSent` now means "genuinely
+// new automatic notifications created this run" (duplicates the dedup guarantee already caught are
+// correctly excluded — they were not, in fact, (re)sent). This stays "manually run today's
+// automatic reminder check now," a distinct action from the Phase 2 manual composer below.
 const triggerReminders = asyncHandler(async (req, res) => {
-  const { remindersSent } = await reminderJob.runReminderScan();
-  sendSuccess(res, { data: { remindersSent } });
+  const { notificationsCreated } = await reminderEngineService.runReminderEngine();
+  sendSuccess(res, { data: { remindersSent: notificationsCreated } });
 });
 
 // Explicit whitelist, matching notification.controller.js's own serializeNotification pattern —

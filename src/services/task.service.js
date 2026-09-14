@@ -6,11 +6,44 @@ const AppError = require('../utils/AppError');
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const PERFORMANCE_ORDER = ['excellent', 'good', 'fair', 'weak'];
+const KARACHI_TIME_ZONE = 'Asia/Karachi';
 
+// Phase 9's original `date.setHours(0, 0, 0, 0)` anchored the business day to the HOST PROCESS's
+// own local timezone — correct only by coincidence when the host happens to run in Asia/Karachi
+// (true of this dev machine, not guaranteed of a production container, e.g. Render's default
+// UTC). The application's business calendar is Pakistan time (Phase 3's Karachi-timezone
+// requirement), so the day boundary must be computed from Asia/Karachi regardless of
+// process.env.TZ — Intl.DateTimeFormat with an explicit timeZone is TZ-independent of the host.
+const karachiDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: KARACHI_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+function getKarachiDateParts(date) {
+  const byType = {};
+  karachiDateFormatter.formatToParts(date).forEach((part) => {
+    if (part.type !== 'literal') byType[part.type] = part.value;
+  });
+  return { year: Number(byType.year), month: Number(byType.month), day: Number(byType.day) };
+}
+
+// Returns a fixed UTC-midnight instant representing the Karachi calendar date of `date` — not
+// Karachi midnight itself, deliberately: daysBetween() below only needs two dates on the same
+// Karachi calendar day to produce an identical instant, and two dates on adjacent Karachi
+// calendar days to differ by exactly one MS_PER_DAY. A constant UTC-anchored representation per
+// calendar date guarantees both, with no DST edge case (Asia/Karachi has had no DST since 2002).
 function startOfDay(date) {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
+  const { year, month, day } = getKarachiDateParts(date);
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+// The Pakistan calendar-date string (YYYY-MM-DD) — used by Phase 3's automatic reminder engine to
+// build its dedupKey ("today" must always mean Karachi's today, never the host's).
+function getPakistanDateString(date = new Date()) {
+  const { year, month, day } = getKarachiDateParts(date);
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
 // Whole-calendar-day difference (deadline minus referenceDate), ignoring time-of-day — required
@@ -267,6 +300,11 @@ module.exports = {
   computeTimeStatus,
   computePerformanceRating,
   applyNewUpdateToTask,
+  // Phase 3 addition — exported so reminder-engine.service.js can build its dedupKey's Pakistan
+  // calendar-date component from the exact same Karachi-anchored logic startOfDay()/daysBetween()
+  // use, rather than reimplementing Intl.DateTimeFormat timezone handling a second time.
+  getPakistanDateString,
+  startOfDay,
   // Phase 7 addition: exported (unchanged body) so dashboard.service.js can reuse the exact same
   // RBAC-scoping rule listTasks already uses, per docs/06-backend.md §4.1, instead of
   // reimplementing it. Calling buildTaskFilter(requestingUser, {}) yields exactly the scoping
