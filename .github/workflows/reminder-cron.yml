@@ -1,0 +1,40 @@
+# Free alternative to Render Cron Jobs (which require a paid Render plan — see the Phase 3
+# deployment report). Calls the exact same POST /api/v1/admin/trigger-reminders endpoint the
+# Dashboard's manual "یاد دہانیاں بھیجیں" button already uses, so there is still only ONE reminder
+# engine implementation and only ONE production trigger path for the automatic scan — this workflow
+# is just an unattended caller of it, authenticated via the CRON_SECRET repository secret instead
+# of an Admin session (see backend/src/middleware/cronAuth.middleware.js).
+name: Daily Reminder Cron
+
+on:
+  schedule:
+    # 02:00 UTC = 07:00 Asia/Karachi (Karachi is a fixed UTC+5, no DST — see
+    # backend/src/services/task.service.js's own Karachi-timezone comments).
+    - cron: '0 2 * * *'
+  # Lets a human run this on demand from the Actions tab (Run workflow) to verify the setup
+  # without waiting for the schedule.
+  workflow_dispatch: {}
+
+jobs:
+  trigger-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger automatic reminder engine
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -u
+          http_status=$(curl -sS -o response.json -w '%{http_code}' -X POST \
+            -H "X-Cron-Secret: ${CRON_SECRET}" \
+            -H "Accept: application/json" \
+            "https://tms-backend-fynx.onrender.com/api/v1/admin/trigger-reminders")
+
+          echo "HTTP status: ${http_status}"
+          echo "Response body:"
+          cat response.json
+          echo ""
+
+          if [ "${http_status}" -lt 200 ] || [ "${http_status}" -ge 300 ]; then
+            echo "::error::Reminder trigger failed with HTTP status ${http_status}"
+            exit 1
+          fi

@@ -27,6 +27,7 @@ describe('POST /auth/dev-login route registration under NODE_ENV=production', ()
       GOOGLE_DRIVE_FOLDER_ID: 'prod-test-drive-folder-id',
       FRONTEND_URL: 'https://example.com',
       REMINDER_DAYS_BEFORE: '2',
+      CRON_SECRET: 'production-test-cron-secret-not-real-00000000',
     });
   });
 

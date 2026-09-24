@@ -50,6 +50,15 @@ const envSchema = z.object({
   FRONTEND_URL: z.string().url('FRONTEND_URL must be a valid URL'),
   // Configurable reminder lead time — never hardcode this inside business logic.
   REMINDER_DAYS_BEFORE: z.coerce.number().int().positive().default(2),
+
+  // ---- Cron authentication (GitHub Actions scheduled trigger) ----
+  // Consumed by middleware/cronAuth.middleware.js for POST /admin/trigger-reminders only — a
+  // shared secret GitHub Actions sends as the X-Cron-Secret header so the daily scheduled run can
+  // reach the endpoint without an Admin JWT (Render's own Cron Jobs require a paid plan; this is
+  // the free alternative). Minimum length matches this project's own JWT_SECRET convention and
+  // keeps brute-forcing the header infeasible even without a dedicated rate limiter — a rate
+  // limiter is applied anyway (rateLimiter.middleware.js's cronTriggerRateLimiter), defense in depth.
+  CRON_SECRET: z.string().min(32, 'CRON_SECRET must be at least 32 characters'),
 });
 
 const parsed = envSchema.safeParse(process.env);

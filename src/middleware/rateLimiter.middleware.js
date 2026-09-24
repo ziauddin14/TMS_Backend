@@ -20,4 +20,23 @@ const googleAuthRateLimiter = rateLimit({
   },
 });
 
-module.exports = { googleAuthRateLimiter };
+// GitHub Actions calls POST /admin/trigger-reminders at most once a day, plus occasional manual
+// Admin-JWT calls from the Dashboard button — so a generous-but-bounded limit costs legitimate use
+// nothing while still blunting brute-force guessing of the X-Cron-Secret header (defense in depth
+// alongside the timing-safe comparison in cronAuth.middleware.js; a 32+ char random secret is
+// already infeasible to guess within any reasonable rate limit, this just adds a second layer).
+const cronTriggerRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler(req, res) {
+    res.status(429).json({
+      success: false,
+      message: 'Too many requests. Please try again later.',
+      code: 'RATE_LIMITED',
+    });
+  },
+});
+
+module.exports = { googleAuthRateLimiter, cronTriggerRateLimiter };
