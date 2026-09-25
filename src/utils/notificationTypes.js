@@ -10,6 +10,12 @@ const NOTIFICATION_TYPES = Object.freeze({
   TASK_REMINDER: 'TASK_REMINDER',
   TASK_DUE_SOON: 'TASK_DUE_SOON',
   TASK_DUE_TOMORROW: 'TASK_DUE_TOMORROW',
+  // Closes the classification gap found in production (task 260906, 2026-09-25): a task whose
+  // deadline is Karachi-today (timeStatus: { type: 'remaining', days: 0 }) previously matched none
+  // of the three original automatic types and was silently skipped — see
+  // reminder-engine.service.js's classify(). Mirrors the Dashboard's own distinct "آج آخری تاریخ
+  // ہے" label for this exact state (frontend/src/utils/formatDate.js).
+  TASK_DUE_TODAY: 'TASK_DUE_TODAY',
   TASK_OVERDUE: 'TASK_OVERDUE',
 });
 

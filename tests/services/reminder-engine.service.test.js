@@ -97,15 +97,24 @@ describe('reminder-engine.service — classification (Phase 3 §7/§24 A/B)', ()
     expect(await Notification.countDocuments({ taskId: task._id })).toBe(0);
   });
 
-  it('deadline is today (0 days remaining, not yet overdue) -> no automatic notification (locked classification\'s own ELSE branch)', async () => {
+  // Production-incident regression test (task 260906, 2026-09-25): this used to assert
+  // notificationsCreated:0 here — that was the bug itself, not a passing spec. A due-today task
+  // must now genuinely produce a distinct TASK_DUE_TODAY notification, same as the other three
+  // automatic types.
+  it('deadline is today (0 days remaining, not yet overdue) -> TASK_DUE_TODAY, and only TASK_DUE_TODAY (precedence)', async () => {
     const admin = await makeAdmin();
     const user = await makeUser();
     const task = await makeTask(admin, [user], 0);
 
     const summary = await reminderEngineService.runReminderEngine();
 
-    expect(summary.notificationsCreated).toBe(0);
-    expect(await Notification.countDocuments({ taskId: task._id })).toBe(0);
+    expect(summary.notificationsCreated).toBe(1);
+    const notifications = await Notification.find({ taskId: task._id, recipientUserId: user._id });
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].type).toBe(NOTIFICATION_TYPES.TASK_DUE_TODAY);
+    expect(notifications[0].message).not.toBe(
+      'اس کام کی آخری تاریخ کل ہے۔' // must not reuse TASK_DUE_TOMORROW's wording — deadline is today, not tomorrow
+    );
   });
 });
 

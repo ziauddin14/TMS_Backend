@@ -19,20 +19,35 @@ const AUTOMATIC_REMINDER_CONTENT = Object.freeze({
     title: 'کام کی آخری تاریخ کل ہے',
     message: 'اس کام کی آخری تاریخ کل ہے۔',
   },
+  [NOTIFICATION_TYPES.TASK_DUE_TODAY]: {
+    title: 'کام کی آخری تاریخ آج ہے',
+    message: 'اس کام کی آخری تاریخ آج ہے۔ براہِ کرم آج ہی تازہ ترین اپڈیٹ فراہم کریں۔',
+  },
   [NOTIFICATION_TYPES.TASK_DUE_SOON]: {
     title: 'کام کی آخری تاریخ قریب ہے',
     message: 'اس کام کی آخری تاریخ قریب ہے۔',
   },
 });
 
-// Precedence, exact as locked: OVERDUE > DUE_TOMORROW > DUE_SOON > nothing. A task deemed
-// "remaining" with days:0 (deadline is today, not yet overdue) deliberately produces no automatic
-// notification — not a gap, the locked classification's own ELSE branch.
+// Precedence: OVERDUE > DUE_TODAY > DUE_TOMORROW > DUE_SOON > nothing. Each branch is keyed off a
+// mutually exclusive `days` value (0, 1, or >1), so there is no actual overlap to arbitrate — the
+// ordering below just reads chronologically.
+//
+// Production incident fix (task 260906, 2026-09-25): the original three-branch version had no
+// case for `{ type: 'remaining', days: 0 }` (deadline is Karachi-today, not yet overdue) — it fell
+// straight to `return null`, so a due-today task was silently skipped by every scan, forever
+// (the next classification it could ever receive was OVERDUE, one calendar day later). This was a
+// genuine gap, not a deliberate exclusion, despite an earlier comment here claiming otherwise —
+// the Dashboard itself already treats days:0 as a distinct, meaningful state (its own "آج آخری
+// تاریخ ہے" label, frontend/src/utils/formatDate.js), so the reminder engine now does too.
 function classify(timeStatus) {
   if (timeStatus.type === 'overdue') {
     return NOTIFICATION_TYPES.TASK_OVERDUE;
   }
   if (timeStatus.type === 'remaining') {
+    if (timeStatus.days === 0) {
+      return NOTIFICATION_TYPES.TASK_DUE_TODAY;
+    }
     if (timeStatus.days === 1) {
       return NOTIFICATION_TYPES.TASK_DUE_TOMORROW;
     }
