@@ -59,6 +59,15 @@ const envSchema = z.object({
   // keeps brute-forcing the header infeasible even without a dedicated rate limiter — a rate
   // limiter is applied anyway (rateLimiter.middleware.js's cronTriggerRateLimiter), defense in depth.
   CRON_SECRET: z.string().min(32, 'CRON_SECRET must be at least 32 characters'),
+
+  // ---- Web Push (VAPID) ----
+  // Consumed by push.service.js's webpush.setVapidDetails() call. Generated once via
+  // `node -e "console.log(require('web-push').generateVAPIDKeys())"` — never hand-typed, these
+  // must be a genuine EC P-256 key pair or setVapidDetails() throws at startup. VAPID_PUBLIC_KEY
+  // is also exposed to the frontend (VITE_VAPID_PUBLIC_KEY, a separate copy in the frontend's own
+  // env) — public by design, safe to ship to the browser. VAPID_PRIVATE_KEY never leaves the server.
+  VAPID_PUBLIC_KEY: z.string().min(1, 'VAPID_PUBLIC_KEY is required'),
+  VAPID_PRIVATE_KEY: z.string().min(1, 'VAPID_PRIVATE_KEY is required'),
 });
 
 const parsed = envSchema.safeParse(process.env);

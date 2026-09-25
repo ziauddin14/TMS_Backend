@@ -47,6 +47,7 @@ app.use('/api/v1/dashboard', require('./routes/dashboard.routes'));
 app.use('/api/v1/reports', require('./routes/reports.routes'));
 app.use('/api/v1/admin', require('./routes/admin.routes'));
 app.use('/api/v1/notifications', require('./routes/notifications.routes'));
+app.use('/api/v1/push', require('./routes/push.routes'));
 
 app.use(notFoundHandler);
 app.use(errorHandler); // must be last

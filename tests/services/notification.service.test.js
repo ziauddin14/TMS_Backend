@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const { connect, closeDatabase, clearDatabase } = require('../helpers/db');
 const Notification = require('../../src/models/Notification');
 const notificationService = require('../../src/services/notification.service');
+const pushService = require('../../src/services/push.service');
 
 beforeAll(async () => connect());
 afterEach(async () => clearDatabase());
@@ -234,5 +235,74 @@ describe('notification.service — markAllRead', () => {
     const me = new mongoose.Types.ObjectId();
     const { updatedCount } = await notificationService.markAllRead(me);
     expect(updatedCount).toBe(0);
+  });
+});
+
+// Web Push addition — a progressive-enhancement delivery channel layered on top of the DB write
+// above (locked constraint: never a replacement, never touches dedup/recipient-resolution/content
+// logic). Hooked into createOrDetectDuplicate itself, so every existing caller (admin flows via
+// createNotification, the reminder engine via createSystemNotification) gets it "for free," with
+// no per-caller changes anywhere else in this file.
+describe('notification.service — Web Push integration (fire-and-forget on top of the DB write)', () => {
+  afterEach(() => {
+    if (pushService.sendPushToUser.mockRestore) pushService.sendPushToUser.mockRestore();
+  });
+
+  it('fires a push send for a genuinely new notification, with the same title/message/task metadata', async () => {
+    const pushSpy = jest.spyOn(pushService, 'sendPushToUser').mockResolvedValue(undefined);
+    const recipientUserId = new mongoose.Types.ObjectId();
+    const taskId = new mongoose.Types.ObjectId();
+
+    const doc = await notificationService.createNotification(
+      basePayload({
+        recipientUserId,
+        title: 'عنوان',
+        message: 'پیغام',
+        taskId,
+        metadata: { taskCodeNumber: '260901' },
+      })
+    );
+
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy).toHaveBeenCalledWith(recipientUserId, {
+      title: 'عنوان',
+      body: 'پیغام',
+      icon: '/favicon.png',
+      data: { notificationId: doc.id, taskCodeNumber: '260901' },
+    });
+  });
+
+  it('does NOT fire a push send on a dedup-hit (created:false) — a duplicate scan must never re-push the same alert', async () => {
+    const pushSpy = jest.spyOn(pushService, 'sendPushToUser').mockResolvedValue(undefined);
+    const dedupKey = 'AUTO_REMINDER:task-x:user-x:2026-09-25';
+    await notificationService.createNotification(basePayload({ dedupKey }));
+    pushSpy.mockClear(); // only the SECOND (duplicate) call matters from here on
+
+    await notificationService.createNotification(basePayload({ dedupKey, title: 'Different title, same key' }));
+
+    expect(pushSpy).not.toHaveBeenCalled();
+  });
+
+  it('a push send that rejects never breaks notification creation — createNotification still resolves normally', async () => {
+    jest.spyOn(pushService, 'sendPushToUser').mockRejectedValue(new Error('push service down'));
+
+    const doc = await notificationService.createNotification(basePayload());
+
+    expect(doc).toBeDefined();
+    expect(doc.title).toBe('Title');
+    // Let the fire-and-forget .catch() settle before the test ends, so its console.error log
+    // never bleeds into a later test's output.
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  it("also fires for the automatic reminder engine's own entry point (createSystemNotification)", async () => {
+    const pushSpy = jest.spyOn(pushService, 'sendPushToUser').mockResolvedValue(undefined);
+    const recipientUserId = new mongoose.Types.ObjectId();
+
+    await notificationService.createSystemNotification(
+      basePayload({ recipientUserId, dedupKey: 'AUTO_REMINDER:task-y:user-y:2026-09-25' })
+    );
+
+    expect(pushSpy).toHaveBeenCalledTimes(1);
   });
 });

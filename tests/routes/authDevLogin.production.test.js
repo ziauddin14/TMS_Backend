@@ -28,6 +28,11 @@ describe('POST /auth/dev-login route registration under NODE_ENV=production', ()
       FRONTEND_URL: 'https://example.com',
       REMINDER_DAYS_BEFORE: '2',
       CRON_SECRET: 'production-test-cron-secret-not-real-00000000',
+      // Genuine (but test-only, throwaway) EC P-256 VAPID key pair — push.service.js's
+      // setVapidDetails() validates key format at module load, so a hand-typed dummy string would
+      // throw. Same pair used by .env.test.
+      VAPID_PUBLIC_KEY: 'BBfTwnXXfFaU2tvGg7iQPzQCREWmPlgphc9cHFJPTUn8FiUC4F6zqqOzAQVyduIg0pXI0JUC2Ow-whyaGTcqsIQ',
+      VAPID_PRIVATE_KEY: 'ABXyMWoesjynCCuYIIcypaPzZbp5Y-RxrvnVd3AwhDE',
     });
   });
 

@@ -6,6 +6,8 @@ const Task = require('../models/Task');
 const AppError = require('../utils/AppError');
 const { NOTIFICATION_TYPES } = require('../utils/notificationTypes');
 const { resolveTemplate } = require('../utils/notificationTemplates');
+const pushService = require('./push.service');
+const logger = require('../utils/logger');
 
 const VALID_TYPES = new Set(Object.values(NOTIFICATION_TYPES));
 
@@ -25,6 +27,29 @@ function assertValidType(type) {
 // is an atomic, database-level guarantee, not a check-then-insert race (locked blueprint §5).
 // Admin-sourced calls never pass a dedupKey, so this branch never applies to them.
 //
+// Web Push addition — a second, progressive-enhancement delivery channel layered ON TOP of the
+// Notification write above, never a replacement for it (locked constraint: existing dedup/
+// recipient-resolution/Urdu content is never touched, only reused as-is). Deliberately NOT
+// awaited by its only caller below: a slow or failing push send must never delay or fail the
+// primary DB-backed notification. Any rejection is caught right here — pushService.sendPushToUser
+// already isolates per-device failures internally, but this catch is the final backstop against
+// this ever becoming an unhandled rejection or bubbling out of createOrDetectDuplicate.
+function sendPushForNotification(notification) {
+  pushService
+    .sendPushToUser(notification.recipientUserId, {
+      title: notification.title,
+      body: notification.message,
+      icon: '/favicon.png',
+      data: {
+        notificationId: notification.id,
+        taskCodeNumber: notification.metadata?.taskCodeNumber,
+      },
+    })
+    .catch((err) => {
+      logger.error(`Push send failed for notification ${notification.id}:`, err.message || err);
+    });
+}
+
 // Shared by createNotification and Phase 3's createSystemNotification below (the one place the
 // E11000/dedupKey branch is handled) — returns { notification, created } so a caller that needs
 // to know which branch happened (the automatic reminder engine, tallying notificationsCreated vs
@@ -57,6 +82,9 @@ async function createOrDetectDuplicate({
       dedupKey: resolvedDedupKey,
       metadata,
     });
+    // Only on a genuine new row — a dedup-hit (the branch below, created:false) must never
+    // re-push the exact same alert to someone's phone a second time.
+    sendPushForNotification(notification);
     return { notification, created: true };
   } catch (err) {
     if (err.code === 11000 && resolvedDedupKey) {
