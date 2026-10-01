@@ -8,3 +8,6 @@ npm-debug.log*
 .DS_Store
 dist/
 build/
+# Historical-import dry-run/commit reports and mongodump backups contain real internal data.
+import-reports/
+import-backups/
