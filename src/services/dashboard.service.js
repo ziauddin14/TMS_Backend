@@ -108,11 +108,13 @@ function buildRatingKpis(tasks) {
 // getDashboardSummary below is refactored to call this helper but returns byte-identical output
 // for its existing caller — nothing about Phase 7's behavior changes.
 //
-// `ratings` (added with the KPI redesign) is computed over the same filter from a second, lean
-// query rather than inside the $facet, so that the effective percent comes from the model's own
+// `ratings` (added with the KPI redesign) is computed from a second, lean query rather than
+// inside the $facet, so that the effective percent comes from the model's own
 // Task.getEffectivePercent instead of a copy of its rule written as an aggregation expression.
+// It has its own filter (`ratingsFilter`, defaulting to the same one): getDashboardSummary passes
+// the request's filter WITHOUT the rating filter — see there for why.
 // byStatus/byPerformance/total are unchanged — the documented shape older clients read.
-async function computeSummaryForFilter(filter) {
+async function computeSummaryForFilter(filter, ratingsFilter = filter) {
   const [[result], ratingFields] = await Promise.all([
     Task.aggregate([
       { $match: filter },
@@ -124,7 +126,7 @@ async function computeSummaryForFilter(filter) {
         },
       },
     ]),
-    Task.find(filter).select('performanceRating completionPercent syntheticRating.isSynthetic syntheticRating.assumedPercent').lean(),
+    Task.find(ratingsFilter).select('performanceRating completionPercent syntheticRating.isSynthetic syntheticRating.assumedPercent').lean(),
   ]);
 
   const total = result.total[0]?.count ?? 0;
@@ -137,29 +139,42 @@ async function computeSummaryForFilter(filter) {
   };
 }
 
+// See computeSummaryForFilter's comment: Task.aggregate() doesn't auto-cast, so a raw id string
+// would never match the stored ObjectId values and would silently return an empty result for every
+// User. Cast explicitly here; buildTaskFilter itself still returns exactly what it already
+// returned (Phase 5 unchanged). An assigneeId that is not an id at all can match no task — say so
+// directly rather than letting the cast throw.
+function castAssigneeForAggregate(filter) {
+  if (!filter.assignees) return filter;
+  if (mongoose.Types.ObjectId.isValid(filter.assignees)) {
+    return { ...filter, assignees: new mongoose.Types.ObjectId(filter.assignees) };
+  }
+  const matchNothing = { ...filter, _id: { $in: [] } };
+  delete matchNothing.assignees;
+  return matchNothing;
+}
+
 // docs/05-apis.md §8 — GET /dashboard/summary. Scoped identically to listTasks
 // (docs/06-backend.md §4.1): reuses task.service.js's buildTaskFilter, unmodified, rather than
 // reimplementing the RBAC rule — and, since the KPI redesign, with the same filters too
-// (`filters` is the validated query: every filter GET /tasks accepts), so the figures describe
-// exactly the set of tasks the table lists for the same query. A User is always limited to their
-// own tasks, whatever they send: buildTaskFilter forces that server-side.
+// (`filters` is the validated query: every filter GET /tasks accepts). A User is always limited
+// to their own tasks, whatever they send: buildTaskFilter forces that server-side.
+//
+// Two sets come out of one request:
+// - byStatus / byPerformance / total describe exactly the set the task table lists for the same
+//   query — every filter applied.
+// - `ratings` applies every filter EXCEPT the rating one (performanceRating). The four band cards
+//   are themselves the control that sets that filter: if they obeyed it, clicking "good" would
+//   leave "good" at 100% and blank the other three, hiding the distribution the user is choosing
+//   from. Every other filter — zimmedar, status, dates, search, responsibility, and ratingSource
+//   (synthetic / real) — still narrows them.
 async function getDashboardSummary(requestingUser, filters = {}) {
-  const filter = taskService.buildTaskFilter(requestingUser, filters);
-  // See computeSummaryForFilter's comment: Task.aggregate() doesn't auto-cast, so a raw id
-  // string would never match the stored ObjectId values and would silently return an empty
-  // result for every User. Cast explicitly here; buildTaskFilter itself still returns exactly
-  // what it already returned (Phase 5 unchanged). An assigneeId that is not an id at all can
-  // match no task — say so directly rather than letting the cast throw.
-  if (filter.assignees) {
-    if (mongoose.Types.ObjectId.isValid(filter.assignees)) {
-      filter.assignees = new mongoose.Types.ObjectId(filter.assignees);
-    } else {
-      delete filter.assignees;
-      filter._id = { $in: [] };
-    }
-  }
+  const filtersWithoutRating = { ...filters };
+  delete filtersWithoutRating.performanceRating;
+  const filter = castAssigneeForAggregate(taskService.buildTaskFilter(requestingUser, filters));
+  const ratingsFilter = castAssigneeForAggregate(taskService.buildTaskFilter(requestingUser, filtersWithoutRating));
 
-  return computeSummaryForFilter(filter);
+  return computeSummaryForFilter(filter, ratingsFilter);
 }
 
 module.exports = { getDashboardSummary, computeSummaryForFilter, buildRatingKpis, percentsSummingTo100 };

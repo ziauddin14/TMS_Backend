@@ -179,8 +179,11 @@ describe('buildRatingKpis — overall quality: the plain average of the effectiv
   });
 });
 
-// ---- Against the database: the summary follows every filter, exactly like the task list -------
-describe('getDashboardSummary — computed over the same filtered set as the task list', () => {
+// ---- Against the database: the summary follows the dashboard's filters ------------------------
+// total / byStatus / byPerformance describe exactly the listed tasks (every filter). The rating
+// KPIs follow every filter EXCEPT the rating one, so the four band cards keep showing the whole
+// distribution while one of them is the active filter.
+describe('getDashboardSummary — computed over the dashboard\'s filtered set', () => {
   beforeAll(async () => connect());
   afterEach(async () => clearDatabase());
   afterAll(async () => closeDatabase());
@@ -255,14 +258,82 @@ describe('getDashboardSummary — computed over the same filtered set as the tas
     ['several filters at once', { status: 'closed', responsibility: 'R1', ratingSource: 'synthetic' }, ['260102']],
     ['a rating AND its source', { performanceRating: 'weak', ratingSource: 'real' }, ['260201']],
     ['a contradiction (unrated AND real) matches nothing', { performanceRating: '-', ratingSource: 'real' }, []],
-  ])('filter by %s: the KPIs are exactly those of the listed tasks', async (_label, filters, expectedCodes) => {
+  ])('filter by %s: total is the listed set; the rating KPIs are the same set minus the rating filter', async (_label, filters, expectedCodes) => {
     await seed();
+    const withoutRatingFilter = { ...filters };
+    delete withoutRatingFilter.performanceRating;
 
-    const [summary, listed] = await Promise.all([summaryFor(filters), listFor(filters)]);
+    const [summary, listed, listedIgnoringRating] = await Promise.all([summaryFor(filters), listFor(filters), listFor(withoutRatingFilter)]);
 
     expect(listed.map((t) => t.codeNumber)).toEqual(expectedCodes);
     expect(summary.total).toBe(expectedCodes.length);
-    expect(summary.ratings).toEqual(buildRatingKpis(listed));
+    expect(summary.ratings).toEqual(buildRatingKpis(listedIgnoringRating));
+  });
+
+  describe('the rating filter itself does not narrow the rating KPIs', () => {
+    it.each(['excellent', 'good', 'fair', 'weak', '-'])('performanceRating=%s: the band cards still show the whole distribution', async (rating) => {
+      await seed();
+
+      const [unfiltered, filtered] = await Promise.all([summaryFor({}), summaryFor({ performanceRating: rating })]);
+
+      expect(filtered.ratings).toEqual(unfiltered.ratings);
+      expect(filtered.ratings.bands).toEqual({
+        excellent: { count: 1, percent: 20 },
+        good: { count: 1, percent: 20 },
+        fair: { count: 1, percent: 20 },
+        weak: { count: 2, percent: 40 },
+      });
+    });
+
+    it('...while total / byStatus / byPerformance DO follow it — they describe the listed tasks', async () => {
+      await seed();
+
+      const summary = await summaryFor({ performanceRating: 'weak' });
+
+      expect(summary.total).toBe(2);
+      expect(summary.byPerformance.weak.count).toBe(2);
+      expect(summary.byPerformance.good.count).toBe(0);
+      expect(summary.byStatus).toMatchObject({ pending: { count: 1, percent: 50 }, closed: { count: 1, percent: 50 } });
+    });
+
+    it('every OTHER filter still narrows the rating KPIs when a rating filter is also set', async () => {
+      await seed();
+
+      const [statusOnly, statusAndRating] = await Promise.all([
+        summaryFor({ status: 'closed' }),
+        summaryFor({ status: 'closed', performanceRating: 'good' }),
+      ]);
+
+      // closed tasks: real excellent 95, synthetic good 80, real weak 50 (+ one closed, unrated)
+      expect(statusAndRating.ratings).toEqual(statusOnly.ratings);
+      expect(statusAndRating.ratings).toMatchObject({ ratedCount: 3, unratedCount: 1, syntheticCount: 1, overallQuality: { band: 'fair', percent: 75 } });
+      expect(statusAndRating.total).toBe(1); // the table lists only the one closed "good" task
+    });
+
+    it('ratingSource is NOT the rating filter: synthetic / real still narrows the rating KPIs', async () => {
+      await seed();
+
+      const [syntheticOnly, realOnly, syntheticPlusBand] = await Promise.all([
+        summaryFor({ ratingSource: 'synthetic' }),
+        summaryFor({ ratingSource: 'real' }),
+        summaryFor({ ratingSource: 'synthetic', performanceRating: 'weak' }),
+      ]);
+
+      expect(syntheticOnly.ratings).toMatchObject({ ratedCount: 3, syntheticCount: 3, unratedCount: 0 });
+      expect(realOnly.ratings).toMatchObject({ ratedCount: 2, syntheticCount: 0, unratedCount: 0 });
+      expect(syntheticPlusBand.ratings).toEqual(syntheticOnly.ratings);
+    });
+
+    it('a normal user: the same rule, within their own tasks only', async () => {
+      await seed();
+      const asUserA = { id: userA.id, role: 'user' };
+
+      const [mine, mineWithBand] = await Promise.all([summaryFor({}, asUserA), summaryFor({ performanceRating: 'good' }, asUserA)]);
+
+      expect(mineWithBand.ratings).toEqual(mine.ratings);
+      expect(mineWithBand.ratings.ratedCount).toBe(3); // userB's tasks never enter it
+      expect(mineWithBand.total).toBe(1);
+    });
   });
 
   it('filter by zimmedar (assigneeId): only that person\'s tasks', async () => {

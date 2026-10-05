@@ -11,7 +11,7 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "reminder:run": "node scripts/run-reminder-engine.js",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "test": "node --experimental-vm-modules --max-old-space-size=4096 node_modules/jest/bin/jest.js --runInBand",
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch --runInBand",
     "lint": "eslint .",
     "format": "prettier --write ."

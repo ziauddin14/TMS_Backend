@@ -84,7 +84,7 @@ describe('GET /api/v1/dashboard/summary — filters', () => {
 
   it.each([
     ['?status=pending', 1, 1],
-    ['?performanceRating=weak', 2, 2],
+    ['?performanceRating=weak', 2, 5], // the rating filter narrows total, never the rating KPIs
     ['?ratingSource=synthetic', 3, 3],
     ['?ratingSource=real', 2, 2],
     ['?responsibility=R2', 2, 2],
@@ -97,6 +97,31 @@ describe('GET /api/v1/dashboard/summary — filters', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.total).toBe(total);
     expect(res.body.data.ratings.ratedCount).toBe(rated);
+  });
+
+  it('with a band selected, the band figures are unchanged — only the listed-set figures follow it', async () => {
+    const { admin } = await seed();
+
+    const [plain, withBand] = await Promise.all([summary(admin), summary(admin, '?performanceRating=good')]);
+
+    expect(withBand.status).toBe(200);
+    expect(withBand.body.data.ratings).toEqual(plain.body.data.ratings);
+    expect(withBand.body.data.ratings.bands.weak).toEqual({ count: 2, percent: 40 });
+    expect(withBand.body.data.total).toBe(1);
+    expect(withBand.body.data.byPerformance.good.count).toBe(1);
+    expect(withBand.body.data.byPerformance.weak.count).toBe(0);
+  });
+
+  it('a band plus another filter: the band figures follow the other filter only', async () => {
+    const { admin, userB } = await seed();
+
+    const [zimmedarOnly, zimmedarAndBand] = await Promise.all([
+      summary(admin, `?assigneeId=${userB.id}`),
+      summary(admin, `?assigneeId=${userB.id}&performanceRating=fair`),
+    ]);
+
+    expect(zimmedarAndBand.body.data.ratings).toEqual(zimmedarOnly.body.data.ratings);
+    expect(zimmedarAndBand.body.data.ratings).toMatchObject({ ratedCount: 2, syntheticCount: 1 });
   });
 
   it('an empty result has no overall value (null), not zero', async () => {
