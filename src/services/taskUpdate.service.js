@@ -78,7 +78,7 @@ async function createUpdate(requestingUser, taskId, { description, completionPer
       );
       createdUpdateId = created._id;
 
-      await taskService.applyNewUpdateToTask(task, { completionPercent }, { session });
+      await taskService.applyNewUpdateToTask(task, { completionPercent }, { session, actorId: requestingUser.id });
     });
   } finally {
     await session.endSession();

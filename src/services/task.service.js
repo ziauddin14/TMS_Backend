@@ -78,11 +78,53 @@ function computeTimeStatus(task, now = new Date()) {
   return { type: 'remaining', days: 0 };
 }
 
+// The percentage thresholds alone — no status rule, no late downgrade. The one definition of them:
+// computePerformanceRating below builds the real rating on top of it, and a developer-assigned
+// (synthetic) rating (models/Task.js syntheticRating) is exactly this value for its assumedPercent.
+function ratingForPercent(percent) {
+  return percent >= 90 ? 'excellent' : percent >= 80 ? 'good' : percent >= 70 ? 'fair' : 'weak'; // eslint-disable-line no-nested-ternary
+}
+
 function computePerformanceRating(completionPercent, timeStatus, status) {
   if (!['complete', 'closed'].includes(status)) return '-';
-  let rating = completionPercent >= 90 ? 'excellent' : completionPercent >= 80 ? 'good' : completionPercent >= 70 ? 'fair' : 'weak'; // eslint-disable-line no-nested-ternary
+  let rating = ratingForPercent(completionPercent);
   if (timeStatus.type === 'late') rating = downgradeOneLevel(rating);
   return rating;
+}
+
+// Sets task.performanceRating from the real formula — the one place closeTask and
+// applyNewUpdateToTask do it — with one rule on top for a task that carries a developer-assigned
+// (synthetic) rating (models/Task.js syntheticRating):
+//
+// - While the formula has nothing real to give (the task is still ongoing/pending, so it returns
+//   '-'), the synthetic rating stays in force: performanceRating and syntheticRating are left
+//   exactly as they are. An update on an open task must not reset a synthetic rating to '-'.
+// - The moment the formula yields a REAL rating (the task is closed, or an update takes it to
+//   complete), that real rating replaces the synthetic one: performanceRating is overwritten,
+//   syntheticRating.isSynthetic becomes false, and the replacement is recorded in its history.
+//   The rest of syntheticRating is kept as the record of what was once assumed.
+//
+// A task with no synthetic rating (or one already retired) gets the formula's value, as always.
+function applyComputedRating(task, { actorId, note, now = new Date() }) {
+  const realRating = computePerformanceRating(task.completionPercent, task.timeStatus, task.status);
+
+  if (task.syntheticRating?.isSynthetic !== true) {
+    task.performanceRating = realRating;
+    return;
+  }
+  if (realRating === '-') return;
+
+  task.syntheticRating.history.push({
+    at: now,
+    by: mongoose.Types.ObjectId.isValid(actorId) ? new mongoose.Types.ObjectId(actorId) : 'system',
+    fromPercent: task.syntheticRating.assumedPercent,
+    toPercent: task.completionPercent,
+    fromRating: task.performanceRating,
+    toRating: realRating,
+    note,
+  });
+  task.syntheticRating.isSynthetic = false;
+  task.performanceRating = realRating;
 }
 
 function escapeRegex(str) {
@@ -269,7 +311,7 @@ async function closeTask(adminUser, taskId) {
   task.closedBy = adminUser.id;
   task.closedAt = new Date();
   task.timeStatus = computeTimeStatus(task);
-  task.performanceRating = computePerformanceRating(task.completionPercent, task.timeStatus, task.status);
+  applyComputedRating(task, { actorId: adminUser.id, note: 'synthetic rating replaced by the real rating — task closed' });
 
   await task.save();
   return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name');
@@ -278,15 +320,17 @@ async function closeTask(adminUser, taskId) {
 // docs/06-backend.md §4.5 — Phase 6 addition. Called by taskUpdate.service.js's createUpdate,
 // inside the same MongoDB transaction, immediately after a new TaskUpdate is created. Mutates and
 // saves the given Task document; does not re-fetch/re-populate — that's the caller's job. Accepts
-// an optional { session } so the save participates in the caller's transaction.
-async function applyNewUpdateToTask(task, updatePayload, { session } = {}) {
+// an optional { session } so the save participates in the caller's transaction, and an optional
+// { actorId } (who posted the update) for the history entry written if this update is the one that
+// replaces a synthetic rating with a real one — see applyComputedRating.
+async function applyNewUpdateToTask(task, updatePayload, { session, actorId } = {}) {
   task.completionPercent = updatePayload.completionPercent;
   task.lastUpdateAt = new Date();
   if (task.completionPercent >= 100 && task.status !== 'closed') {
     task.status = 'complete';
   }
   task.timeStatus = computeTimeStatus(task);
-  task.performanceRating = computePerformanceRating(task.completionPercent, task.timeStatus, task.status);
+  applyComputedRating(task, { actorId, note: 'synthetic rating replaced by the real rating — task completed' });
   await task.save({ session });
   return task;
 }
@@ -299,6 +343,7 @@ module.exports = {
   closeTask,
   computeTimeStatus,
   computePerformanceRating,
+  ratingForPercent,
   applyNewUpdateToTask,
   // Phase 3 addition — exported so reminder-engine.service.js can build its dedupKey's Pakistan
   // calendar-date component from the exact same Karachi-anchored logic startOfDay()/daysBetween()

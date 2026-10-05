@@ -34,8 +34,10 @@ function buildPerformanceBreakdown(groupResults, total) {
     const count = counts[key] || 0;
     breakdown[key] = { count, percent: percentOf(count, total) };
   });
-  // performanceRating is stored as '-' for tasks still ongoing/pending (docs/04-db-models.md §3);
-  // the documented response shape names this bucket "notApplicable" (docs/05-apis.md §8), not '-'.
+  // performanceRating is stored as '-' for tasks with no rating yet — normally every task still
+  // ongoing/pending, except one that carries a developer-assigned (synthetic) rating, which is
+  // counted under that rating like any other (docs/02-db-design.md §7, docs/04-db-models.md §3).
+  // The documented response shape names the '-' bucket "notApplicable" (docs/05-apis.md §8).
   const notApplicableCount = counts['-'] || 0;
   breakdown.notApplicable = { count: notApplicableCount, percent: percentOf(notApplicableCount, total) };
   return breakdown;

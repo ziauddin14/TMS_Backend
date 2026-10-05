@@ -12,6 +12,38 @@ const timeStatusSchema = new Schema(
   { _id: false }
 );
 
+// A developer-assigned ("synthetic") rating — NOT a real one. Additive and optional: a task only
+// carries this subdocument once a rating has been assigned to it by hand/script
+// (scripts/assign-synthetic-ratings.js), and every document without it behaves exactly as before.
+// The task's real fields (status, completionPercent, ...) are never altered by it; only
+// performanceRating — still the single field every screen and report reads — is set from
+// assumedPercent, and this subdocument is what marks that value as not real.
+const syntheticRatingHistorySchema = new Schema(
+  {
+    at: { type: Date, required: true },
+    by: { type: Schema.Types.Mixed, required: true },
+    fromPercent: { type: Number, default: null },
+    toPercent: { type: Number, default: null },
+    fromRating: { type: String, default: null },
+    toRating: { type: String, default: null },
+    note: { type: String, default: null },
+  },
+  { _id: false }
+);
+
+const syntheticRatingSchema = new Schema(
+  {
+    isSynthetic: { type: Boolean, required: true },
+    assumedPercent: { type: Number, min: 0, max: 100, required: true },
+    assignedAt: { type: Date, required: true },
+    // An admin User's ObjectId, or a marker string such as 'system:script'.
+    assignedBy: { type: Schema.Types.Mixed, required: true },
+    reason: { type: String, default: null },
+    history: { type: [syntheticRatingHistorySchema], default: [] },
+  },
+  { _id: false }
+);
+
 const taskSchema = new Schema(
   {
     // unique: true creates the { codeNumber: 1 } unique index (docs/02-db-design.md §10) — no
@@ -36,9 +68,18 @@ const taskSchema = new Schema(
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     closedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     closedAt: { type: Date, default: null },
+    // Absent (undefined) on every task that has no synthetic rating — see syntheticRatingSchema.
+    syntheticRating: { type: syntheticRatingSchema, default: undefined },
   },
   { timestamps: true }
 );
+
+// The percentage a task should be counted at: the developer-assumed one while the task carries a
+// synthetic rating, otherwise its real completionPercent. A plain accessor (works on a document or
+// a lean object), kept here so it is the one place any future KPI maths takes a percentage from.
+taskSchema.statics.getEffectivePercent = function getEffectivePercent(task) {
+  return task?.syntheticRating?.isSynthetic ? task.syntheticRating.assumedPercent : task.completionPercent;
+};
 
 // Deliberately no pre('save') recalculation hooks here. Per the layering rule
 // (docs/03-backend-foundation.md §2) and docs/04-db-models.md §3, computing timeStatus /
