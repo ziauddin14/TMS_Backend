@@ -8,6 +8,8 @@ const {
   createTaskSchema,
   updateTaskSchema,
   listTasksQuerySchema,
+  editSyntheticRatingSchema,
+  removeSyntheticRatingSchema,
 } = require('../validators/task.validator');
 
 const router = express.Router();
@@ -22,5 +24,20 @@ router.get('/:id', tasksController.getTask);
 router.post('/', requireRole('admin'), validate(createTaskSchema), tasksController.createTask);
 router.patch('/:id', requireRole('admin'), validate(updateTaskSchema), tasksController.updateTask);
 router.patch('/:id/close', requireRole('admin'), tasksController.closeTask);
+
+// A developer-assigned (synthetic) rating — Admin only, and only on a task that carries one
+// (409 otherwise). Change its assumed percentage, or remove it (the task goes back to unrated).
+router.patch(
+  '/:id/synthetic-rating',
+  requireRole('admin'),
+  validate(editSyntheticRatingSchema),
+  tasksController.editSyntheticRating
+);
+router.delete(
+  '/:id/synthetic-rating',
+  requireRole('admin'),
+  validate(removeSyntheticRatingSchema),
+  tasksController.removeSyntheticRating
+);
 
 module.exports = router;

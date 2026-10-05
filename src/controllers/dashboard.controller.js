@@ -4,7 +4,7 @@ const { sendSuccess } = require('../utils/apiResponse');
 
 // GET /dashboard/summary — docs/05-apis.md §8
 const getSummary = asyncHandler(async (req, res) => {
-  const summary = await dashboardService.getDashboardSummary(req.user);
+  const summary = await dashboardService.getDashboardSummary(req.user, req.query);
   sendSuccess(res, { data: summary });
 });
 

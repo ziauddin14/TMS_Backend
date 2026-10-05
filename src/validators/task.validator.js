@@ -25,18 +25,29 @@ const updateTaskSchema = z
   })
   .strict();
 
+// The task FILTERS, on their own — the one definition shared by every endpoint that selects a set
+// of tasks: GET /tasks below, GET /reports/export (report.validator.js extends listTasksQuerySchema)
+// and GET /dashboard/summary (dashboard.validator.js), so the KPI cards, the table and an export
+// always describe the same set for the same query string.
+// ratingSource — 'synthetic': only tasks whose rating is a developer-assigned (synthetic) one;
+// 'real': only tasks with a real rating (rated, and not synthetic).
+const taskFilterFields = {
+  status: z.enum(['ongoing', 'pending', 'complete', 'closed']).optional(),
+  performanceRating: z.enum(['excellent', 'good', 'fair', 'weak', '-']).optional(),
+  ratingSource: z.enum(['synthetic', 'real']).optional(),
+  assigneeId: z.string().min(1).optional(),
+  responsibility: z.string().trim().min(1).optional(),
+  deadlineFrom: z.coerce.date().optional(),
+  deadlineTo: z.coerce.date().optional(),
+  entryFrom: z.coerce.date().optional(),
+  entryTo: z.coerce.date().optional(),
+  search: z.string().trim().min(1).optional(),
+};
+
 // docs/05-apis.md §5 — GET /tasks query params.
 const listTasksQuerySchema = z
   .object({
-    status: z.enum(['ongoing', 'pending', 'complete', 'closed']).optional(),
-    performanceRating: z.enum(['excellent', 'good', 'fair', 'weak', '-']).optional(),
-    assigneeId: z.string().min(1).optional(),
-    responsibility: z.string().trim().min(1).optional(),
-    deadlineFrom: z.coerce.date().optional(),
-    deadlineTo: z.coerce.date().optional(),
-    entryFrom: z.coerce.date().optional(),
-    entryTo: z.coerce.date().optional(),
-    search: z.string().trim().min(1).optional(),
+    ...taskFilterFields,
     sortBy: z
       .enum(['deadline', 'createdAt', 'codeNumber', 'title', 'completionPercent', 'status', 'performanceRating'])
       .optional()
@@ -47,4 +58,31 @@ const listTasksQuerySchema = z
   })
   .strict();
 
-module.exports = { createTaskSchema, updateTaskSchema, listTasksQuerySchema };
+// PATCH /tasks/:id/synthetic-rating — Admin only. A JSON number (not a numeric string), 0–100.
+const editSyntheticRatingSchema = z
+  .object({
+    assumedPercent: z
+      .number({ required_error: 'assumedPercent is required', invalid_type_error: 'assumedPercent must be a number' })
+      .min(0, 'assumedPercent must be between 0 and 100')
+      .max(100, 'assumedPercent must be between 0 and 100'),
+    note: z.string().trim().max(500, 'note must be 500 characters or fewer').optional(),
+  })
+  .strict();
+
+// DELETE /tasks/:id/synthetic-rating — Admin only. The body is optional (a DELETE often has none).
+const removeSyntheticRatingSchema = z
+  .object({
+    note: z.string().trim().max(500, 'note must be 500 characters or fewer').optional(),
+  })
+  .strict()
+  .optional()
+  .transform((body) => body ?? {});
+
+module.exports = {
+  createTaskSchema,
+  updateTaskSchema,
+  listTasksQuerySchema,
+  taskFilterFields,
+  editSyntheticRatingSchema,
+  removeSyntheticRatingSchema,
+};

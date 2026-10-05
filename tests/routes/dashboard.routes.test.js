@@ -63,6 +63,20 @@ describe('GET /api/v1/dashboard/summary', () => {
           notApplicable: { count: 1, percent: 100 },
         },
         total: 1,
+        // One ongoing, unrated task: nothing is rated, so there is no overall quality at all.
+        ratings: {
+          bands: {
+            excellent: { count: 0, percent: 0 },
+            good: { count: 0, percent: 0 },
+            fair: { count: 0, percent: 0 },
+            weak: { count: 0, percent: 0 },
+          },
+          ratedCount: 0,
+          unratedCount: 1,
+          syntheticCount: 0,
+          averageEffectivePercent: null,
+          overallQuality: null,
+        },
       },
     });
   });

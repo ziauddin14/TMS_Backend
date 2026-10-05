@@ -106,7 +106,22 @@ function buildFontconfigEnv() {
   return { FONTCONFIG_FILE: fontsConfPath };
 }
 
-const USER_SUMMARY_COLUMNS = ['name', 'responsibility', 'ongoing', 'pending', 'complete', 'closed', 'excellent', 'good', 'fair', 'weak', 'notApplicable', 'total'];
+const USER_SUMMARY_COLUMNS = ['name', 'responsibility', 'ongoing', 'pending', 'complete', 'closed', 'excellent', 'good', 'fair', 'weak', 'synthetic', 'notApplicable', 'total'];
+// The rating columns count developer-assigned (synthetic, "تخمینی") ratings together with real
+// ones, so a report must never show them without also saying how many are synthetic: whenever any
+// rating column is in the output, the 'synthetic' column is too — whatever column list the client
+// asked for (an older client does not know the column exists and would never request it).
+const USER_SUMMARY_RATING_COLUMNS = ['excellent', 'good', 'fair', 'weak'];
+const USER_SUMMARY_SYNTHETIC_NOTE =
+  'تخمینی (Estimated): developer-assigned ratings, not real ones. They are included in the Excellent / Good / Fair / Weak counts.';
+
+function resolveUserSummaryColumns(requested) {
+  const active = resolveColumns(requested, USER_SUMMARY_COLUMNS);
+  const showsRatings = active.some((c) => USER_SUMMARY_RATING_COLUMNS.includes(c));
+  if (!showsRatings || active.includes('synthetic')) return active;
+  return USER_SUMMARY_COLUMNS.filter((c) => active.includes(c) || c === 'synthetic');
+}
+
 const USER_SUMMARY_COLUMN_LABELS = {
   name: 'Name',
   responsibility: 'Responsibility',
@@ -118,6 +133,7 @@ const USER_SUMMARY_COLUMN_LABELS = {
   good: 'Good',
   fair: 'Fair',
   weak: 'Weak',
+  synthetic: 'تخمینی (Estimated)',
   notApplicable: 'N/A',
   total: 'Total',
 };
@@ -555,15 +571,17 @@ ${groupsHtml}
 }
 
 function renderUserSummaryHtml(rows, { columns }) {
-  const activeColumns = resolveColumns(columns, USER_SUMMARY_COLUMNS);
+  const activeColumns = resolveUserSummaryColumns(columns);
   const headRow = activeColumns.map((c) => `<th>${escapeHtml(USER_SUMMARY_COLUMN_LABELS[c])}</th>`).join('');
   const bodyRows = rows
     .map((row) => `<tr>${activeColumns.map((c) => `<td>${escapeHtml(row[c])}</td>`).join('')}</tr>`)
     .join('');
+  const syntheticNote = activeColumns.includes('synthetic') ? `<p>${escapeHtml(USER_SUMMARY_SYNTHETIC_NOTE)}</p>` : '';
 
   const body = `
 <h1>User-wise Summary Report</h1>
-<table><thead><tr>${headRow}</tr></thead><tbody>${bodyRows}</tbody></table>`;
+<table><thead><tr>${headRow}</tr></thead><tbody>${bodyRows}</tbody></table>
+${syntheticNote}`;
 
   return htmlDocument('User-wise Summary Report', body);
 }
@@ -590,6 +608,8 @@ async function buildUserSummaryData(_requestingUser) {
         good: summary.byPerformance.good.count,
         fair: summary.byPerformance.fair.count,
         weak: summary.byPerformance.weak.count,
+        // How many of this user's ratings (counted in the four columns above) are synthetic.
+        synthetic: summary.ratings.syntheticCount,
         notApplicable: summary.byPerformance.notApplicable.count,
         total: summary.total,
       };
@@ -858,7 +878,7 @@ async function generateExcel(data, { headerInfo }) {
 }
 
 async function generateUserSummaryExcel(rows, { columns }) {
-  const activeColumns = resolveColumns(columns, USER_SUMMARY_COLUMNS);
+  const activeColumns = resolveUserSummaryColumns(columns);
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('User Summary', { views: [{ rightToLeft: true }] });
   sheet.columns = activeColumns.map((c) => ({ header: USER_SUMMARY_COLUMN_LABELS[c], key: c, width: 18 }));
@@ -873,6 +893,12 @@ async function generateUserSummaryExcel(rows, { columns }) {
       cell.alignment = { readingOrder: 'rtl' };
     });
   });
+
+  if (activeColumns.includes('synthetic')) {
+    sheet.addRow([]);
+    const noteRow = sheet.addRow([USER_SUMMARY_SYNTHETIC_NOTE]);
+    noteRow.getCell(1).alignment = { readingOrder: 'rtl' };
+  }
 
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }

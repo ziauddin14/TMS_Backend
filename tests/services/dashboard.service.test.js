@@ -93,6 +93,21 @@ describe('dashboardService.getDashboardSummary — response shape and full bucke
         notApplicable: { count: 2, percent: 33 },
       },
       total: 6,
+      // The rating KPIs are over the RATED set only (4 of the 6): each band is a quarter of it,
+      // and the overall quality is the plain average of 100, 85, 75 and 50 = 77.5 -> 'fair'.
+      ratings: {
+        bands: {
+          excellent: { count: 1, percent: 25 },
+          good: { count: 1, percent: 25 },
+          fair: { count: 1, percent: 25 },
+          weak: { count: 1, percent: 25 },
+        },
+        ratedCount: 4,
+        unratedCount: 2,
+        syntheticCount: 0,
+        averageEffectivePercent: 77.5,
+        overallQuality: { band: 'fair', percent: 77.5 },
+      },
     });
 
     // total equals the sum of byStatus counts, and separately the sum of byPerformance counts.

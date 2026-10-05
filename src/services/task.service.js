@@ -3,6 +3,7 @@ const Task = require('../models/Task');
 const User = require('../models/User');
 const Counter = require('../models/Counter');
 const AppError = require('../utils/AppError');
+const logger = require('../utils/logger');
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const PERFORMANCE_ORDER = ['excellent', 'good', 'fair', 'weak'];
@@ -157,6 +158,7 @@ function buildTaskFilter(requestingUser, filters) {
   const {
     status,
     performanceRating,
+    ratingSource,
     assigneeId,
     responsibility,
     deadlineFrom,
@@ -170,6 +172,16 @@ function buildTaskFilter(requestingUser, filters) {
   if (status) filter.status = status;
   if (performanceRating) filter.performanceRating = performanceRating;
   if (responsibility) filter.responsibility = responsibility;
+
+  // Where a rating came from: a developer-assigned (synthetic) one, or a real one — i.e. rated
+  // AND not synthetic. Written as its own clause so it simply combines with a performanceRating
+  // filter (a real rating that is also "-" correctly matches nothing).
+  if (ratingSource === 'synthetic') {
+    filter['syntheticRating.isSynthetic'] = true;
+  } else if (ratingSource === 'real') {
+    filter['syntheticRating.isSynthetic'] = { $ne: true };
+    filter.$and = [{ performanceRating: { $ne: '-' } }];
+  }
 
   if (deadlineFrom || deadlineTo) {
     filter.deadline = {};
@@ -317,6 +329,83 @@ async function closeTask(adminUser, taskId) {
   return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name');
 }
 
+// ---- Admin edits of a developer-assigned (synthetic) rating --------------------------------
+// Both write with one targeted update — exactly performanceRating, the named syntheticRating
+// fields and one new history entry — and with timestamps:false, so nothing else on the task can
+// move: not status, completionPercent, lastUpdateAt, timeStatus or updatedAt. No TaskUpdate is
+// created and no notification is sent. The history entry (who, when, from → to, note) is the audit
+// trail; a log line records it server-side as well.
+async function findTaskWithSyntheticRating(taskId) {
+  if (!mongoose.Types.ObjectId.isValid(taskId)) {
+    throw new AppError('Task not found.', 404, 'TASK_NOT_FOUND');
+  }
+  const task = await Task.findById(taskId);
+  if (!task) {
+    throw new AppError('Task not found.', 404, 'TASK_NOT_FOUND');
+  }
+  if (task.syntheticRating?.isSynthetic !== true) {
+    throw new AppError('This task does not have a synthetic rating.', 409, 'NOT_SYNTHETIC_RATING');
+  }
+  return task;
+}
+
+async function writeSyntheticRatingChange(task, adminUser, { set, historyEntry }) {
+  const result = await Task.updateOne(
+    // Still synthetic at the moment of writing — a real close in between must win, not be overwritten.
+    { _id: task._id, 'syntheticRating.isSynthetic': true },
+    { $set: set, $push: { 'syntheticRating.history': historyEntry } },
+    { timestamps: false, runValidators: true }
+  );
+  if (result.matchedCount !== 1) {
+    throw new AppError('This task does not have a synthetic rating.', 409, 'NOT_SYNTHETIC_RATING');
+  }
+  logger.info(
+    `Synthetic rating ${historyEntry.toRating === '-' ? 'removed' : 'changed'} on task ${task.codeNumber} by ${adminUser.id}: ` +
+      `${historyEntry.fromPercent}% (${historyEntry.fromRating}) → ${historyEntry.toPercent === null ? 'none' : `${historyEntry.toPercent}%`} (${historyEntry.toRating})`
+  );
+  return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name');
+}
+
+// PATCH /tasks/:id/synthetic-rating — a new assumed percentage. The rating is the plain threshold
+// rating of that percentage (ratingForPercent): no late downgrade, exactly as when it was assigned.
+async function editSyntheticRating(adminUser, taskId, { assumedPercent, note }) {
+  const task = await findTaskWithSyntheticRating(taskId);
+  const toRating = ratingForPercent(assumedPercent);
+
+  return writeSyntheticRatingChange(task, adminUser, {
+    set: { performanceRating: toRating, 'syntheticRating.assumedPercent': assumedPercent },
+    historyEntry: {
+      at: new Date(),
+      by: new mongoose.Types.ObjectId(adminUser.id),
+      fromPercent: task.syntheticRating.assumedPercent,
+      toPercent: assumedPercent,
+      fromRating: task.performanceRating,
+      toRating,
+      note: note || null,
+    },
+  });
+}
+
+// DELETE /tasks/:id/synthetic-rating — the task goes back to unrated ('-'). The subdocument is
+// kept, switched off, as the record of what was once assumed; from here on the task is rated (or
+// not) by the real formula like any other.
+async function removeSyntheticRating(adminUser, taskId, { note } = {}) {
+  const task = await findTaskWithSyntheticRating(taskId);
+
+  return writeSyntheticRatingChange(task, adminUser, {
+    set: { performanceRating: '-', 'syntheticRating.isSynthetic': false },
+    historyEntry: {
+      at: new Date(),
+      by: new mongoose.Types.ObjectId(adminUser.id),
+      fromPercent: task.syntheticRating.assumedPercent,
+      toPercent: null,
+      fromRating: task.performanceRating,
+      toRating: '-',
+      note: note || 'synthetic rating removed',
+    },
+  });
+}
+
 // docs/06-backend.md §4.5 — Phase 6 addition. Called by taskUpdate.service.js's createUpdate,
 // inside the same MongoDB transaction, immediately after a new TaskUpdate is created. Mutates and
 // saves the given Task document; does not re-fetch/re-populate — that's the caller's job. Accepts
@@ -345,6 +434,8 @@ module.exports = {
   computePerformanceRating,
   ratingForPercent,
   applyNewUpdateToTask,
+  editSyntheticRating,
+  removeSyntheticRating,
   // Phase 3 addition — exported so reminder-engine.service.js can build its dedupKey's Pakistan
   // calendar-date component from the exact same Karachi-anchored logic startOfDay()/daysBetween()
   // use, rather than reimplementing Intl.DateTimeFormat timezone handling a second time.
