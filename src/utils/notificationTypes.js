@@ -17,6 +17,10 @@ const NOTIFICATION_TYPES = Object.freeze({
   // ہے" label for this exact state (frontend/src/utils/formatDate.js).
   TASK_DUE_TODAY: 'TASK_DUE_TODAY',
   TASK_OVERDUE: 'TASK_OVERDUE',
+  // Task receipt (services/receipt.service.js): the notice an assignee gets when a task is given to
+  // them — they confirm it with "وصول کر لیا" — and the reminders sent while they have not.
+  TASK_ASSIGNED: 'TASK_ASSIGNED',
+  TASK_RECEIPT_REMINDER: 'TASK_RECEIPT_REMINDER',
 });
 
 // Unlike `type`, `source` is a small, genuinely closed set intrinsic to the architecture itself
