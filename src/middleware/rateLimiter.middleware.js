@@ -39,4 +39,21 @@ const cronTriggerRateLimiter = rateLimit({
   },
 });
 
-module.exports = { googleAuthRateLimiter, cronTriggerRateLimiter };
+// POST /admin/trigger-receipt-reminders — the same style, its own counter: an hourly caller (plus
+// the odd manual trigger) shares nothing with the daily endpoint's limit, so neither can throttle
+// the other.
+const receiptReminderTriggerRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler(req, res) {
+    res.status(429).json({
+      success: false,
+      message: 'Too many requests. Please try again later.',
+      code: 'RATE_LIMITED',
+    });
+  },
+});
+
+module.exports = { googleAuthRateLimiter, cronTriggerRateLimiter, receiptReminderTriggerRateLimiter };
