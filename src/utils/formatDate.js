@@ -16,4 +16,25 @@ function formatDateShort(value) {
   return `${day}-${month}-${year}`;
 }
 
-module.exports = { formatDateShort };
+// The same DD-MM-YY, but always the calendar date in Pakistan (Asia/Karachi), whatever timezone
+// the server runs in — for text a person reads as a date of their own day (the task-receipt
+// notices). Intl with an explicit timeZone does not depend on the host's TZ.
+const karachiDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Karachi',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+function formatDateShortKarachi(value) {
+  if (!value) return '-';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '-';
+  const parts = {};
+  karachiDateFormatter.formatToParts(d).forEach((part) => {
+    parts[part.type] = part.value;
+  });
+  return `${parts.day}-${parts.month}-${parts.year.slice(-2)}`;
+}
+
+module.exports = { formatDateShort, formatDateShortKarachi };

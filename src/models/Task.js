@@ -44,6 +44,35 @@ const syntheticRatingSchema = new Schema(
   { _id: false }
 );
 
+// Task receipt — one per person a task was given to, who must confirm it ("وصول کر لیا").
+// Only tasks created through the app after this feature shipped carry `receipts` at all: on every
+// older task the field is ABSENT (default: undefined below), and an absent field is what keeps
+// such a task out of the whole feature — no notice, no reminder, no status, no filter match. No
+// migration ever writes it. Created by services/receipt.service.js only.
+//   - user / assignedAt / assignedBy: who, when, and by which admin.
+//   - acknowledgedAt: when they confirmed it; null until then.
+//   - supersededAt: set when the person is taken off the task (reassign/edit). The receipt is kept
+//     as history but no longer counts and is never reminded.
+//   - notificationId: the assignment notice sent with it.
+//   - remindersSent: one entry per reminder level sent (at most one per level).
+const receiptReminderSchema = new Schema(
+  {
+    level: { type: Number, required: true },
+    sentAt: { type: Date, required: true },
+  },
+  { _id: false }
+);
+
+const receiptSchema = new Schema({
+  user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  assignedAt: { type: Date, required: true },
+  assignedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  acknowledgedAt: { type: Date, default: null },
+  supersededAt: { type: Date, default: null },
+  notificationId: { type: Schema.Types.ObjectId, ref: 'Notification', default: null },
+  remindersSent: { type: [receiptReminderSchema], default: [] },
+});
+
 const taskSchema = new Schema(
   {
     // unique: true creates the { codeNumber: 1 } unique index (docs/02-db-design.md §10) — no
@@ -70,6 +99,10 @@ const taskSchema = new Schema(
     closedAt: { type: Date, default: null },
     // Absent (undefined) on every task that has no synthetic rating — see syntheticRatingSchema.
     syntheticRating: { type: syntheticRatingSchema, default: undefined },
+    // Absent (undefined) on every task from before the receipt feature — see receiptSchema. Without
+    // `default: undefined` Mongoose would give every task an empty array, and the reminder
+    // engine's daily save would write it onto old tasks.
+    receipts: { type: [receiptSchema], default: undefined },
   },
   { timestamps: true }
 );

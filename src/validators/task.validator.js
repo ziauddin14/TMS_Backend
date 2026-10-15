@@ -31,6 +31,8 @@ const updateTaskSchema = z
 // always describe the same set for the same query string.
 // ratingSource — 'synthetic': only tasks whose rating is a developer-assigned (synthetic) one;
 // 'real': only tasks with a real rating (rated, and not synthetic).
+// receipt — task receipt (services/receipt.service.js): 'received' / 'not_received' / 'partial'.
+// What each means, for an admin and for a user, is in task.service.js's receiptFilterClauses.
 const taskFilterFields = {
   status: z.enum(['ongoing', 'pending', 'complete', 'closed']).optional(),
   performanceRating: z.enum(['excellent', 'good', 'fair', 'weak', '-']).optional(),
@@ -42,6 +44,7 @@ const taskFilterFields = {
   entryFrom: z.coerce.date().optional(),
   entryTo: z.coerce.date().optional(),
   search: z.string().trim().min(1).optional(),
+  receipt: z.enum(['received', 'not_received', 'partial']).optional(),
 };
 
 // docs/05-apis.md §5 — GET /tasks query params.
@@ -78,8 +81,16 @@ const removeSyntheticRatingSchema = z
   .optional()
   .transform((body) => body ?? {});
 
+// POST /tasks/:id/acknowledge — no body at all: the receipt confirmed is always the caller's own.
+const acknowledgeTaskSchema = z
+  .object({})
+  .strict()
+  .optional()
+  .transform((body) => body ?? {});
+
 module.exports = {
   createTaskSchema,
+  acknowledgeTaskSchema,
   updateTaskSchema,
   listTasksQuerySchema,
   taskFilterFields,

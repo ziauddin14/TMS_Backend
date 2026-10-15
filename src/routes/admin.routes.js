@@ -4,7 +4,7 @@ const adminController = require('../controllers/admin.controller');
 const authMiddleware = require('../middleware/auth.middleware');
 const requireRole = require('../middleware/role.middleware');
 const requireCronSecretOrAdmin = require('../middleware/cronAuth.middleware');
-const { cronTriggerRateLimiter } = require('../middleware/rateLimiter.middleware');
+const { cronTriggerRateLimiter, receiptReminderTriggerRateLimiter } = require('../middleware/rateLimiter.middleware');
 const validate = require('../middleware/validate.middleware');
 const {
   adminSendNotificationSchema,
@@ -20,6 +20,16 @@ const router = express.Router();
 // itself falls through to the exact same authMiddleware + requireRole('admin') chain whenever the
 // header is absent, so the existing Admin-login path is byte-for-byte unchanged.
 router.post('/trigger-reminders', cronTriggerRateLimiter, requireCronSecretOrAdmin, adminController.triggerReminders);
+
+// Task receipt reminders only — called hourly by .github/workflows/receipt-reminder-cron.yml, with
+// the same X-Cron-Secret (or an Admin session), before the JWT-only routes below for the same
+// reason as trigger-reminders above.
+router.post(
+  '/trigger-receipt-reminders',
+  receiptReminderTriggerRateLimiter,
+  requireCronSecretOrAdmin,
+  adminController.triggerReceiptReminders
+);
 
 router.use(authMiddleware);
 

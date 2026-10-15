@@ -87,7 +87,7 @@ async function createUpdate(requestingUser, taskId, { description, completionPer
   // Re-fetch outside the (now-committed) transaction, populated, for the response shape.
   const [populatedUpdate, populatedTask] = await Promise.all([
     TaskUpdate.findById(createdUpdateId).populate('updatedBy', 'name role responsibility'),
-    Task.findById(taskId).populate('assignees', 'name responsibility').populate('createdBy', 'name'),
+    Task.findById(taskId).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate({ path: 'receipts.user', select: 'name' }),
   ]);
 
   return { update: populatedUpdate, task: populatedTask };

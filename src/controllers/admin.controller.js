@@ -1,5 +1,7 @@
 const reminderEngineService = require('../services/reminder-engine.service');
 const notificationService = require('../services/notification.service');
+const receiptService = require('../services/receipt.service');
+const logger = require('../utils/logger');
 const asyncHandler = require('../utils/asyncHandler');
 const { sendSuccess } = require('../utils/apiResponse');
 
@@ -12,9 +14,27 @@ const { sendSuccess } = require('../utils/apiResponse');
 // new automatic notifications created this run" (duplicates the dedup guarantee already caught are
 // correctly excluded — they were not, in fact, (re)sent). This stays "manually run today's
 // automatic reminder check now," a distinct action from the Phase 2 manual composer below.
+//
+// Task receipt: this daily run is also the backstop for the receipt reminders the hourly job
+// sends (triggerReceiptReminders below) — run AFTER the daily engine, which is unchanged, and
+// never allowed to fail it: if the receipt pass breaks, the daily result is still returned.
+// `remindersSent` keeps its meaning (the daily engine's count); the receipt count is added beside it.
 const triggerReminders = asyncHandler(async (req, res) => {
   const { notificationsCreated } = await reminderEngineService.runReminderEngine();
-  sendSuccess(res, { data: { remindersSent: notificationsCreated } });
+  let receiptRemindersSent = null;
+  try {
+    ({ remindersSent: receiptRemindersSent } = await receiptService.runReceiptReminders());
+  } catch (err) {
+    logger.error('Receipt reminder backstop failed during the daily run:', err);
+  }
+  sendSuccess(res, { data: { remindersSent: notificationsCreated, receiptRemindersSent } });
+});
+
+// POST /admin/trigger-receipt-reminders — task receipt reminders only (receipt.service.js
+// runReceiptReminders): idempotent, at most one reminder per receipt per run.
+const triggerReceiptReminders = asyncHandler(async (req, res) => {
+  const { tasksScanned, remindersSent, failures } = await receiptService.runReceiptReminders();
+  sendSuccess(res, { data: { tasksScanned, remindersSent, failures: failures.length } });
 });
 
 // Explicit whitelist, matching notification.controller.js's own serializeNotification pattern —
@@ -70,4 +90,4 @@ const getNotificationHistory = asyncHandler(async (req, res) => {
   sendSuccess(res, { data: items.map(serializeBatch), meta });
 });
 
-module.exports = { triggerReminders, sendAdminNotification, sendTaskReminder, getNotificationHistory };
+module.exports = { triggerReminders, triggerReceiptReminders, sendAdminNotification, sendTaskReminder, getNotificationHistory };

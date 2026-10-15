@@ -57,6 +57,9 @@ describe('serializeTask', () => {
       timeStatus: { type: 'late', days: 20 },
       performanceRating: 'good',
       syntheticRating: null,
+      // A task from before the task-receipt feature: no receipts, for any viewer.
+      receipt: null,
+      myReceipt: null,
       createdBy: { id: 'a1', name: 'Admin' },
       closedBy: 'a1',
       closedAt: new Date('2025-04-20T00:00:00.000Z'),

@@ -1,0 +1,41 @@
+# Task receipt reminders (backend/src/services/receipt.service.js): an assignee who has not
+# confirmed a task ("وصول کر لیا") is reminded 24 and 48 hours after it was given to them. The daily
+# workflow (reminder-cron.yml) runs once a day and starts hours late, so this one runs every hour
+# and calls the receipt-reminder-only endpoint — the existing daily reminders stay on their own
+# daily schedule and are not touched. The daily run still does a receipt pass too, as a backstop.
+#
+# Same authentication as the daily workflow: the CRON_SECRET repository secret, sent as
+# X-Cron-Secret (backend/src/middleware/cronAuth.middleware.js). The endpoint is idempotent and
+# sends at most one reminder per receipt per run, so a late, repeated or overlapping run is safe.
+name: Hourly Receipt Reminder Cron
+
+on:
+  schedule:
+    # Minute 17 of every hour — away from :00, when GitHub's scheduler is busiest.
+    - cron: '17 * * * *'
+  # Lets a human run this on demand from the Actions tab (Run workflow).
+  workflow_dispatch: {}
+
+jobs:
+  trigger-receipt-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger task receipt reminders
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -u
+          http_status=$(curl -sS -o response.json -w '%{http_code}' -X POST \
+            -H "X-Cron-Secret: ${CRON_SECRET}" \
+            -H "Accept: application/json" \
+            "https://tms-backend-fynx.onrender.com/api/v1/admin/trigger-receipt-reminders")
+
+          echo "HTTP status: ${http_status}"
+          echo "Response body:"
+          cat response.json
+          echo ""
+
+          if [ "${http_status}" -lt 200 ] || [ "${http_status}" -ge 300 ]; then
+            echo "::error::Receipt reminder trigger failed with HTTP status ${http_status}"
+            exit 1
+          fi
