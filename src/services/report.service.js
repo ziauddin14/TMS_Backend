@@ -212,6 +212,9 @@ function capitalize(str) {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
+// The task-receipt filter, in the same English the rest of this description uses.
+const RECEIPT_FILTER_LABELS = { received: 'Received', not_received: 'Not received', partial: 'Partial' };
+
 // docs/06-backend.md §9 / docs/05-apis.md §9: the applied filter's plain-language description,
 // built explicitly from whatever filters were actually passed — never a hardcoded generic label.
 function buildFilterDescription(filters = {}) {
@@ -226,6 +229,7 @@ function buildFilterDescription(filters = {}) {
     parts.push(`Entry Date: ${formatDateRange(filters.entryFrom, filters.entryTo)}`);
   }
   if (filters.search) parts.push(`Search: "${filters.search}"`);
+  if (filters.receipt) parts.push(`Receipt: ${RECEIPT_FILTER_LABELS[filters.receipt] || filters.receipt}`);
   return parts.length > 0 ? parts.join(', ') : 'All Data';
 }
 

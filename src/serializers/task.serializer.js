@@ -32,7 +32,45 @@ function serializeSyntheticRating(syntheticRating, viewer) {
   return serialized;
 }
 
-// Each task populated with assignees (name, responsibility) and createdBy (name).
+// Task receipt (models/Task.js `receipts`). Only CURRENT receipts are shown (a superseded one is
+// history). A task from before the feature has no receipts: both fields are null.
+//   receipt   — admins only: how many people must confirm, how many have, and who/when.
+//   myReceipt — everyone else: their own receipt only, or null if they have none on this task.
+function idOf(value) {
+  if (!value) return null;
+  return String(value._id || value);
+}
+
+function serializeReceipts(receipts, viewer) {
+  if (!Array.isArray(receipts)) return { receipt: null, myReceipt: null };
+  const current = receipts.filter((receipt) => !receipt.supersededAt);
+
+  if (viewer?.role === 'admin') {
+    return {
+      receipt: {
+        required: current.length,
+        acknowledged: current.filter((receipt) => receipt.acknowledgedAt).length,
+        people: current.map((receipt) => ({
+          id: String(receipt._id),
+          user: { id: idOf(receipt.user), name: receipt.user?.name ?? null },
+          assignedAt: receipt.assignedAt,
+          acknowledgedAt: receipt.acknowledgedAt || null,
+          remindersSent: (receipt.remindersSent || []).length,
+        })),
+      },
+      myReceipt: null,
+    };
+  }
+
+  const mine = current.find((receipt) => idOf(receipt.user) === viewer?.id);
+  return {
+    receipt: null,
+    myReceipt: mine ? { assignedAt: mine.assignedAt, acknowledgedAt: mine.acknowledgedAt || null } : null,
+  };
+}
+
+// Each task populated with assignees (name, responsibility), createdBy (name) and, when it has
+// receipts, receipts.user (name).
 function serializeTask(task, viewer) {
   return {
     id: task.id,
@@ -47,6 +85,7 @@ function serializeTask(task, viewer) {
     timeStatus: task.timeStatus,
     performanceRating: task.performanceRating,
     syntheticRating: serializeSyntheticRating(task.syntheticRating, viewer),
+    ...serializeReceipts(task.receipts, viewer),
     createdBy: task.createdBy ? { id: task.createdBy.id, name: task.createdBy.name } : null,
     closedBy: task.closedBy,
     closedAt: task.closedAt,
@@ -55,4 +94,4 @@ function serializeTask(task, viewer) {
   };
 }
 
-module.exports = { serializeTask, serializeSyntheticRating };
+module.exports = { serializeTask, serializeSyntheticRating, serializeReceipts };

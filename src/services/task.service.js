@@ -4,8 +4,12 @@ const User = require('../models/User');
 const Counter = require('../models/Counter');
 const AppError = require('../utils/AppError');
 const logger = require('../utils/logger');
+const receiptService = require('./receipt.service');
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+// Every task this service returns for an API response carries the names of the people on its
+// receipts (task.serializer.js shows them to admins). A task without receipts is unaffected.
+const RECEIPT_USERS = { path: 'receipts.user', select: 'name' };
 const PERFORMANCE_ORDER = ['excellent', 'good', 'fair', 'weak'];
 const KARACHI_TIME_ZONE = 'Asia/Karachi';
 
@@ -128,6 +132,36 @@ function applyComputedRating(task, { actorId, note, now = new Date() }) {
   task.performanceRating = realRating;
 }
 
+// The `receipt` filter (task receipt — services/receipt.service.js). Only a task's CURRENT
+// receipts count (supersededAt null). A task from before the feature has none, so it matches no
+// value of this filter. Ids are cast here, not left to Mongoose: the same filter feeds
+// Task.aggregate() (dashboard.service.js), which casts nothing.
+//   Admin — received: every current receipt confirmed; not_received: none confirmed; partial: some.
+//   User  — their own receipt only: received / not_received. `partial` would reveal whether the
+//           others on the task confirmed, which is not theirs to see, so it matches nothing.
+function receiptFilterClauses(receipt, requestingUser) {
+  if (requestingUser.role === 'user') {
+    const me = new mongoose.Types.ObjectId(requestingUser.id);
+    if (receipt === 'received') {
+      return [{ receipts: { $elemMatch: { user: me, supersededAt: null, acknowledgedAt: { $ne: null } } } }];
+    }
+    if (receipt === 'not_received') {
+      return [{ receipts: { $elemMatch: { user: me, supersededAt: null, acknowledgedAt: null } } }];
+    }
+    return [{ _id: { $in: [] } }];
+  }
+
+  const someConfirmed = { receipts: { $elemMatch: { supersededAt: null, acknowledgedAt: { $ne: null } } } };
+  const somePending = { receipts: { $elemMatch: { supersededAt: null, acknowledgedAt: null } } };
+  if (receipt === 'received') {
+    return [someConfirmed, { receipts: { $not: { $elemMatch: { supersededAt: null, acknowledgedAt: null } } } }];
+  }
+  if (receipt === 'not_received') {
+    return [somePending, { receipts: { $not: { $elemMatch: { supersededAt: null, acknowledgedAt: { $ne: null } } } } }];
+  }
+  return [someConfirmed, somePending];
+}
+
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -166,6 +200,7 @@ function buildTaskFilter(requestingUser, filters) {
     entryFrom,
     entryTo,
     search,
+    receipt,
   } = filters;
 
   const filter = {};
@@ -197,6 +232,9 @@ function buildTaskFilter(requestingUser, filters) {
     const regex = new RegExp(escapeRegex(search), 'i');
     filter.$or = [{ title: regex }, { codeNumber: regex }];
   }
+  if (receipt) {
+    filter.$and = [...(filter.$and || []), ...receiptFilterClauses(receipt, requestingUser)];
+  }
 
   // Ownership scoping (docs/05-apis.md §5): forced here in the service, never trusted from the
   // controller/query string — a User can never see another user's tasks by manipulating assigneeId.
@@ -219,6 +257,7 @@ async function listTasks(requestingUser, filters, pagination) {
     Task.find(filter)
       .populate('assignees', 'name responsibility')
       .populate('createdBy', 'name')
+      .populate(RECEIPT_USERS)
       .sort(sort)
       .skip(skip)
       .limit(limit),
@@ -233,7 +272,7 @@ async function getTaskById(requestingUser, taskId) {
     throw new AppError('Task not found.', 404, 'TASK_NOT_FOUND');
   }
 
-  const task = await Task.findById(taskId).populate('assignees', 'name responsibility').populate('createdBy', 'name');
+  const task = await Task.findById(taskId).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate(RECEIPT_USERS);
   if (!task) {
     throw new AppError('Task not found.', 404, 'TASK_NOT_FOUND');
   }
@@ -249,7 +288,10 @@ async function getTaskById(requestingUser, taskId) {
 }
 
 // docs/06-backend.md §4.2
-async function createTask(adminUser, { title, assignees, responsibility, deadline }) {
+// `withReceipts` — task receipt: only the app's own POST /tasks passes it (task.controller.js).
+// The task then starts with one receipt per eligible assignee, written in the same insert, and
+// each of them gets the assignment notice. Any other caller gets exactly the task it always did.
+async function createTask(adminUser, { title, assignees, responsibility, deadline }, { withReceipts = false } = {}) {
   await validateAssignees(assignees);
 
   const codeNumber = await Counter.getNextCodeNumber();
@@ -265,14 +307,23 @@ async function createTask(adminUser, { title, assignees, responsibility, deadlin
     createdBy: adminUser.id,
   };
   taskData.timeStatus = computeTimeStatus(taskData);
+  if (withReceipts) {
+    taskData.receipts = await receiptService.buildReceiptsForNewTask(assignees, adminUser);
+  }
 
   const created = await Task.create(taskData);
-  return Task.findById(created._id).populate('assignees', 'name responsibility').populate('createdBy', 'name');
+  if (withReceipts) {
+    await receiptService.notifyNewReceipts(created, created.receipts, adminUser);
+  }
+  return Task.findById(created._id).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate(RECEIPT_USERS);
 }
 
 // docs/06-backend.md §4.3 — edits setup fields only, never status/completionPercent/
 // performanceRating. Recomputes timeStatus immediately if deadline changed.
-async function updateTaskFields(taskId, patch) {
+// `withReceipts` + `actor` — task receipt: only the app's own PATCH /tasks/:id passes them. When
+// the assignees change on a task that takes part, the receipts follow (receipt.service.js
+// applyAssigneeChange) and whoever is new on it gets the notice once the task is saved.
+async function updateTaskFields(taskId, patch, { actor, withReceipts = false } = {}) {
   if (!mongoose.Types.ObjectId.isValid(taskId)) {
     throw new AppError('Task not found.', 404, 'TASK_NOT_FOUND');
   }
@@ -288,9 +339,13 @@ async function updateTaskFields(taskId, patch) {
     throw new AppError('Yeh kaam close ho chuka hai', 400, 'VALIDATION_ERROR');
   }
 
+  let addedReceipts = [];
   if (patch.assignees !== undefined) {
     await validateAssignees(patch.assignees);
     task.assignees = patch.assignees;
+    if (withReceipts) {
+      addedReceipts = await receiptService.applyAssigneeChange(task, patch.assignees, actor);
+    }
   }
   if (patch.responsibility !== undefined) {
     task.responsibility = patch.responsibility;
@@ -304,7 +359,10 @@ async function updateTaskFields(taskId, patch) {
   }
 
   await task.save();
-  return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name');
+  if (addedReceipts.length > 0) {
+    await receiptService.notifyNewReceipts(task, addedReceipts, actor);
+  }
+  return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate(RECEIPT_USERS);
 }
 
 // docs/06-backend.md §4.3 (corrected): closing DOES recompute timeStatus and performanceRating,
@@ -326,7 +384,7 @@ async function closeTask(adminUser, taskId) {
   applyComputedRating(task, { actorId: adminUser.id, note: 'synthetic rating replaced by the real rating — task closed' });
 
   await task.save();
-  return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name');
+  return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate(RECEIPT_USERS);
 }
 
 // ---- Admin edits of a developer-assigned (synthetic) rating --------------------------------
@@ -363,7 +421,7 @@ async function writeSyntheticRatingChange(task, adminUser, { set, historyEntry }
     `Synthetic rating ${historyEntry.toRating === '-' ? 'removed' : 'changed'} on task ${task.codeNumber} by ${adminUser.id}: ` +
       `${historyEntry.fromPercent}% (${historyEntry.fromRating}) → ${historyEntry.toPercent === null ? 'none' : `${historyEntry.toPercent}%`} (${historyEntry.toRating})`
   );
-  return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name');
+  return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate(RECEIPT_USERS);
 }
 
 // PATCH /tasks/:id/synthetic-rating — a new assumed percentage. The rating is the plain threshold

@@ -1,11 +1,15 @@
 const notificationService = require('../services/notification.service');
+const receiptService = require('../services/receipt.service');
 const asyncHandler = require('../utils/asyncHandler');
 const { sendSuccess } = require('../utils/apiResponse');
 
 // Explicit whitelist (matches task.controller.js's own serializeTask pattern) rather than
 // trusting the model's raw toJSON() output verbatim — keeps what the API exposes deliberate even
 // as the schema grows in later phases.
-function serializeNotification(notification) {
+// `receipt` — task receipt: on an assignment notice or receipt reminder, the CURRENT state of the
+// recipient's own receipt ({ acknowledgedAt, canAcknowledge }), so the bell shows the right button
+// even if they confirmed somewhere else. null on every other notification.
+function serializeNotification(notification, receipt = null) {
   return {
     id: notification.id,
     type: notification.type,
@@ -17,6 +21,7 @@ function serializeNotification(notification) {
     isRead: notification.isRead,
     readAt: notification.readAt,
     metadata: notification.metadata,
+    receipt,
     createdAt: notification.createdAt,
     updatedAt: notification.updatedAt,
   };
@@ -26,7 +31,8 @@ function serializeNotification(notification) {
 const listNotifications = asyncHandler(async (req, res) => {
   const { page, limit, unreadOnly } = req.query;
   const { items, meta } = await notificationService.listForUser(req.user.id, { page, limit, unreadOnly });
-  sendSuccess(res, { data: items.map(serializeNotification), meta });
+  const receiptStates = await receiptService.receiptStatesForNotifications(req.user.id, items);
+  sendSuccess(res, { data: items.map((item) => serializeNotification(item, receiptStates.get(item.id) || null)), meta });
 });
 
 // GET /notifications/unread-count

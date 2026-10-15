@@ -10,6 +10,7 @@ const {
   listTasksQuerySchema,
   editSyntheticRatingSchema,
   removeSyntheticRatingSchema,
+  acknowledgeTaskSchema,
 } = require('../validators/task.validator');
 
 const router = express.Router();
@@ -24,6 +25,10 @@ router.get('/:id', tasksController.getTask);
 router.post('/', requireRole('admin'), validate(createTaskSchema), tasksController.createTask);
 router.patch('/:id', requireRole('admin'), validate(updateTaskSchema), tasksController.updateTask);
 router.patch('/:id/close', requireRole('admin'), tasksController.closeTask);
+
+// Task receipt — any signed-in person, for their OWN receipt only (receipt.service.js acknowledge):
+// someone not on the task gets 403, someone on it with nothing to confirm 409.
+router.post('/:id/acknowledge', validate(acknowledgeTaskSchema), tasksController.acknowledgeTask);
 
 // A developer-assigned (synthetic) rating — Admin only, and only on a task that carries one
 // (409 otherwise). Change its assumed percentage, or remove it (the task goes back to unrated).
