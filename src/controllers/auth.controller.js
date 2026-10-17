@@ -1,4 +1,6 @@
 const authService = require('../services/auth.service');
+const activityService = require('../services/activity.service');
+const { ACTIVITY_TYPES } = require('../utils/activityTypes');
 const asyncHandler = require('../utils/asyncHandler');
 const { sendSuccess } = require('../utils/apiResponse');
 
@@ -18,6 +20,8 @@ function serializeUser(user) {
 // POST /auth/google — docs/05-apis.md §2
 const loginWithGoogle = asyncHandler(async (req, res) => {
   const { token, user } = await authService.loginWithGoogle(req.body.idToken);
+  // Activity log: the LOGIN event, and last login / last active (fire-and-forget).
+  activityService.recordLogin(user, req);
   sendSuccess(res, { data: { token, user: serializeUser(user) } });
 });
 
@@ -32,7 +36,15 @@ const getMe = asyncHandler(async (req, res) => {
 // in auth.routes.js, not just here).
 const devLogin = asyncHandler(async (req, res) => {
   const { token, user } = await authService.devLogin(req.body.email);
+  activityService.recordLogin(user, req);
   sendSuccess(res, { data: { token, user: serializeUser(user) } });
 });
 
-module.exports = { loginWithGoogle, getMe, devLogin };
+// POST /auth/logout — records the LOGOUT event and nothing else: sessions are stateless JWTs, so
+// there is nothing to revoke (the app forgets its token on its own). Any signed-in person.
+const logout = asyncHandler(async (req, res) => {
+  activityService.record(req, ACTIVITY_TYPES.LOGOUT);
+  sendSuccess(res, { data: { loggedOut: true } });
+});
+
+module.exports = { loginWithGoogle, getMe, devLogin, logout };

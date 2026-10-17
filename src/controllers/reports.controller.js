@@ -1,5 +1,7 @@
 const reportService = require('../services/report.service');
 const asyncHandler = require('../utils/asyncHandler');
+const activityService = require('../services/activity.service');
+const { ACTIVITY_TYPES } = require('../utils/activityTypes');
 
 const CONTENT_TYPES = {
   excel: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -30,6 +32,14 @@ const exportReport = asyncHandler(async (req, res) => {
   const headerInfo = reportService.buildHeaderInfo(req.user, filters);
   const buffer = await reportService.generateReportFile(data, { format, headerInfo });
 
+  // Activity log: the format and which filters were set (their KEYS — never search text or values).
+  activityService.record(req, ACTIVITY_TYPES.REPORT_EXPORTED, {
+    metadata: {
+      format,
+      filters: Object.keys(filters).filter((key) => filters[key] !== undefined && !['sortBy', 'sortOrder'].includes(key)),
+      lastUpdateOnly: Boolean(lastUpdateOnly),
+    },
+  });
   sendFile(res, { format, buffer, filenamePrefix: 'task-report' });
 });
 
@@ -40,6 +50,7 @@ const exportUserSummary = asyncHandler(async (req, res) => {
   const rows = await reportService.buildUserSummaryData(req.user);
   const buffer = await reportService.generateUserSummaryFile(rows, { format, columns });
 
+  activityService.record(req, ACTIVITY_TYPES.USER_SUMMARY_EXPORTED, { metadata: { format } });
   sendFile(res, { format, buffer, filenamePrefix: 'user-summary' });
 });
 

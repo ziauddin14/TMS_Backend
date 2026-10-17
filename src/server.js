@@ -2,9 +2,13 @@ const env = require('./config/env');
 const app = require('./app');
 const { connectDB } = require('./config/db');
 const logger = require('./utils/logger');
+const appSettingService = require('./services/appSetting.service');
 
 async function start() {
   await connectDB();
+  // Activity log: the day it starts recording — written once, atomically, the first time a version
+  // with the feature starts (later starts find it and leave it alone). Never allowed to stop the server.
+  appSettingService.ensureActivityBaselineAtStartup();
 
   // Phase 3 — the old in-process node-cron scheduler (reminder.job.js's startReminderCron) is
   // deliberately no longer started here. The locked architecture's primary scheduler is Render

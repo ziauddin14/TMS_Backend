@@ -79,6 +79,7 @@ async function updateUser(id, patch) {
   }
 
   const allowedFields = ['name', 'responsibility', 'role', 'isActive'];
+  const before = Object.fromEntries(allowedFields.map((field) => [field, user[field]]));
   for (const field of allowedFields) {
     if (patch[field] !== undefined) {
       user[field] = patch[field];
@@ -86,6 +87,12 @@ async function updateUser(id, patch) {
   }
 
   await user.save();
+  // For the activity log (user.controller.js): the NAMES of the changed fields, and whether the
+  // account was active before — so a deactivation / reactivation is recorded as such.
+  user.$locals.changes = {
+    fields: ['name', 'responsibility', 'role'].filter((field) => user[field] !== before[field]),
+    wasActive: before.isActive,
+  };
   return user;
 }
 

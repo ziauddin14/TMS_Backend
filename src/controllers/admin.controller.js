@@ -1,6 +1,8 @@
 const reminderEngineService = require('../services/reminder-engine.service');
 const notificationService = require('../services/notification.service');
 const receiptService = require('../services/receipt.service');
+const activityService = require('../services/activity.service');
+const { ACTIVITY_TYPES } = require('../utils/activityTypes');
 const logger = require('../utils/logger');
 const asyncHandler = require('../utils/asyncHandler');
 const { sendSuccess } = require('../utils/apiResponse');
@@ -27,6 +29,9 @@ const triggerReminders = asyncHandler(async (req, res) => {
   } catch (err) {
     logger.error('Receipt reminder backstop failed during the daily run:', err);
   }
+  // Activity log: only when an Admin pressed the button — the cron call has no signed-in person, so
+  // record() does nothing for it.
+  activityService.record(req, ACTIVITY_TYPES.REMINDERS_TRIGGERED, { metadata: { remindersSent: notificationsCreated } });
   sendSuccess(res, { data: { remindersSent: notificationsCreated, receiptRemindersSent } });
 });
 
@@ -66,6 +71,10 @@ const sendAdminNotification = asyncHandler(async (req, res) => {
     recipientType === 'all'
       ? await notificationService.sendBroadcastToAllUsers({ createdBy: req.user.id, templateKey, message })
       : await notificationService.sendToSpecificUser({ createdBy: req.user.id, userId, templateKey, message });
+  // Activity log: who it went to and how many — never the message text.
+  activityService.record(req, ACTIVITY_TYPES.NOTIFICATION_SENT, {
+    metadata: { recipientMode: recipientType, recipients: result.createdCount, templateKey: templateKey || null, targetUserId: recipientType === 'user' ? userId : undefined },
+  });
   sendSuccess(res, { data: result, statusCode: 201 });
 });
 
@@ -78,6 +87,10 @@ const sendTaskReminder = asyncHandler(async (req, res) => {
     taskId: req.params.taskId,
     templateKey,
     message,
+  });
+  activityService.record(req, ACTIVITY_TYPES.NOTIFICATION_SENT, {
+    taskId: req.params.taskId,
+    metadata: { recipientMode: 'task', recipients: result.createdCount, templateKey: templateKey || null },
   });
   sendSuccess(res, { data: result, statusCode: 201 });
 });

@@ -4,6 +4,16 @@ const env = require('../config/env');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const User = require('../models/User');
+const activityService = require('../services/activity.service');
+
+// Requests that are not the person USING the app, so they never move their last-active time: the
+// bell's unread-count poll, which the frontend repeats every 60 seconds while a tab is visible.
+const PASSIVE_REQUESTS = [['GET', '/api/v1/notifications/unread-count']];
+
+function isPassiveRequest(req) {
+  const path = String(req.originalUrl || '').split('?')[0];
+  return PASSIVE_REQUESTS.some(([method, passivePath]) => req.method === method && path === passivePath);
+}
 
 // Not in the documented Error Code Catalog (docs/05-apis.md §12 only defines INVALID_TOKEN for
 // the Google-token-verification stage at login). UNAUTHORIZED is this implementation's own
@@ -61,6 +71,9 @@ const authMiddleware = asyncHandler(async function authMiddleware(req, res, next
     email: user.email,
     responsibility: user.responsibility,
   };
+  // Activity log: this person is using the app. Throttled and fire-and-forget — at most one write
+  // per 10 minutes, never awaited, never able to fail the request (activity.service.js).
+  if (!isPassiveRequest(req)) activityService.touchLastActive(user);
   next();
 });
 
