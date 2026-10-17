@@ -1,4 +1,6 @@
 const userService = require('../services/user.service');
+const activityService = require('../services/activity.service');
+const { ACTIVITY_TYPES } = require('../utils/activityTypes');
 const asyncHandler = require('../utils/asyncHandler');
 const { sendSuccess } = require('../utils/apiResponse');
 
@@ -32,12 +34,23 @@ const getUser = asyncHandler(async (req, res) => {
 // POST /users — Admin only
 const createUser = asyncHandler(async (req, res) => {
   const user = await userService.createUser(req.body);
+  activityService.record(req, ACTIVITY_TYPES.USER_CREATED, { metadata: { targetUserId: user.id, role: user.role } });
   sendSuccess(res, { data: serializeUser(user), statusCode: 201 });
 });
 
 // PATCH /users/:id — Admin only
 const updateUser = asyncHandler(async (req, res) => {
   const user = await userService.updateUser(req.params.id, req.body);
+  // Activity log: a deactivation / reactivation as such, other changes by field NAME.
+  const changes = user.$locals.changes || { fields: [], wasActive: user.isActive };
+  if (changes.wasActive && !user.isActive) {
+    activityService.record(req, ACTIVITY_TYPES.USER_DEACTIVATED, { metadata: { targetUserId: user.id } });
+  } else if (!changes.wasActive && user.isActive) {
+    activityService.record(req, ACTIVITY_TYPES.USER_REACTIVATED, { metadata: { targetUserId: user.id } });
+  }
+  if (changes.fields.length > 0) {
+    activityService.record(req, ACTIVITY_TYPES.USER_UPDATED, { metadata: { targetUserId: user.id, fields: changes.fields } });
+  }
   sendSuccess(res, { data: serializeUser(user) });
 });
 

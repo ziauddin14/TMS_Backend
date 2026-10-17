@@ -19,6 +19,11 @@ const userSchema = new Schema(
     responsibility: { type: String, required: true, trim: true },
     role: { type: String, enum: ['admin', 'user'], required: true, default: 'user' },
     isActive: { type: Boolean, default: true },
+    // Activity log (services/activity.service.js). Absent until first set, and only ever written
+    // with timestamps:false, so updatedAt never moves for them. lastLoginAt: the last Google sign-in.
+    // lastActiveAt: the last authenticated use of the app (throttled to one write per 10 minutes).
+    lastLoginAt: { type: Date },
+    lastActiveAt: { type: Date },
   },
   { timestamps: true }
 );

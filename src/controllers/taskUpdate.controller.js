@@ -1,4 +1,6 @@
 const taskUpdateService = require('../services/taskUpdate.service');
+const activityService = require('../services/activity.service');
+const { ACTIVITY_TYPES } = require('../utils/activityTypes');
 const asyncHandler = require('../utils/asyncHandler');
 const { sendSuccess } = require('../utils/apiResponse');
 const { serializeTask } = require('../serializers/task.serializer');
@@ -32,6 +34,11 @@ const listUpdates = asyncHandler(async (req, res) => {
 // POST /tasks/:id/updates
 const createUpdate = asyncHandler(async (req, res) => {
   const { update, task } = await taskUpdateService.createUpdate(req.user, req.params.id, req.body);
+  // Activity log: the percent and whether a file came with it — never the description.
+  activityService.record(req, ACTIVITY_TYPES.TASK_UPDATE_CREATED, {
+    taskId: task._id,
+    metadata: { taskCode: task.codeNumber, completionPercent: update.completionPercent, hasAttachment: Boolean(update.attachment?.url) },
+  });
   sendSuccess(res, {
     // Same task representation as GET /tasks/:id (docs/05-apis.md §6 step 3) — the one shared
     // serializer, so the two can never drift apart.

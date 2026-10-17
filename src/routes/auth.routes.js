@@ -15,6 +15,9 @@ router.post('/google', googleAuthRateLimiter, validate(googleLoginSchema), authC
 // GET /auth/me — any authenticated role.
 router.get('/me', authMiddleware, authController.getMe);
 
+// Activity log: records the LOGOUT event only (no token revocation — sessions are stateless).
+router.post('/logout', authMiddleware, authController.logout);
+
 // POST /auth/dev-login — docs/12-testing.md §5: "enabled only when NODE_ENV !== 'production',
 // never reachable on the real deployed app." The route is only REGISTERED under that condition —
 // so in production it does not exist at all (falls through to the app's normal 404), rather than

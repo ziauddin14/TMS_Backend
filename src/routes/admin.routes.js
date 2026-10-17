@@ -1,6 +1,7 @@
 const express = require('express');
 
 const adminController = require('../controllers/admin.controller');
+const activityController = require('../controllers/activity.controller');
 const authMiddleware = require('../middleware/auth.middleware');
 const requireRole = require('../middleware/role.middleware');
 const requireCronSecretOrAdmin = require('../middleware/cronAuth.middleware');
@@ -11,6 +12,12 @@ const {
   taskReminderSchema,
   listNotificationHistoryQuerySchema,
 } = require('../validators/notification.validator');
+const {
+  listActivityUsersQuerySchema,
+  listActivityEventsQuerySchema,
+  activityHistoryQuerySchema,
+  updateActivitySettingsSchema,
+} = require('../validators/activity.validator');
 
 const router = express.Router();
 
@@ -52,5 +59,23 @@ router.get(
   validate(listNotificationHistoryQuerySchema, 'query'),
   adminController.getNotificationHistory
 );
+
+// Activity log — Admin only, every one of them (a normal user gets 403 FORBIDDEN_ROLE).
+router.get('/activity/summary', requireRole('admin'), activityController.getSummary);
+router.get('/activity/users', requireRole('admin'), validate(listActivityUsersQuerySchema, 'query'), activityController.listUsers);
+router.get(
+  '/activity/users/:id/events',
+  requireRole('admin'),
+  validate(listActivityEventsQuerySchema, 'query'),
+  activityController.listEvents
+);
+router.get(
+  '/activity/users/:id/history',
+  requireRole('admin'),
+  validate(activityHistoryQuerySchema, 'query'),
+  activityController.listHistory
+);
+router.get('/settings/activity', requireRole('admin'), activityController.getSettings);
+router.patch('/settings/activity', requireRole('admin'), validate(updateActivitySettingsSchema), activityController.updateSettings);
 
 module.exports = router;

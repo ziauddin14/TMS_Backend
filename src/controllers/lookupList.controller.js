@@ -1,5 +1,7 @@
 const lookupListService = require('../services/lookupList.service');
 const asyncHandler = require('../utils/asyncHandler');
+const activityService = require('../services/activity.service');
+const { ACTIVITY_TYPES } = require('../utils/activityTypes');
 const { sendSuccess } = require('../utils/apiResponse');
 
 function serializeLookup(entry) {
@@ -21,12 +23,14 @@ const listActive = asyncHandler(async (req, res) => {
 // POST /lookup-lists — Admin only
 const createValue = asyncHandler(async (req, res) => {
   const entry = await lookupListService.createValue(req.body);
+  activityService.record(req, ACTIVITY_TYPES.LOOKUP_LIST_CHANGED, { metadata: { listType: entry.listType, action: 'created' } });
   sendSuccess(res, { data: serializeLookup(entry), statusCode: 201 });
 });
 
 // PATCH /lookup-lists/:id — Admin only
 const updateValue = asyncHandler(async (req, res) => {
   const entry = await lookupListService.updateValue(req.params.id, req.body);
+  activityService.record(req, ACTIVITY_TYPES.LOOKUP_LIST_CHANGED, { metadata: { listType: entry.listType, action: 'updated', fields: Object.keys(req.body) } });
   sendSuccess(res, { data: serializeLookup(entry) });
 });
 

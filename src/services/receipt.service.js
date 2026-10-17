@@ -207,6 +207,8 @@ async function acknowledge(requestingUser, taskId, now = new Date()) {
     { recipientUserId: userId, taskId, type: { $in: RECEIPT_NOTIFICATION_TYPES }, isRead: false },
     { $set: { isRead: true, readAt: now } }
   );
+  // true when THIS call confirmed the receipt; false when it had been confirmed already.
+  return result.modifiedCount === 1;
 }
 
 // The reminder level due for one receipt now: the lowest level not yet sent, if its threshold has

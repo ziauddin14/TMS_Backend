@@ -339,6 +339,15 @@ async function updateTaskFields(taskId, patch, { actor, withReceipts = false } =
     throw new AppError('Yeh kaam close ho chuka hai', 400, 'VALIDATION_ERROR');
   }
 
+  // What this edit really changes — the activity log records the NAMES of changed fields and who was
+  // put on / taken off the task (task.controller.js), never the values. Handed back on $locals.
+  const before = {
+    title: task.title,
+    responsibility: task.responsibility,
+    deadline: task.deadline ? new Date(task.deadline).getTime() : null,
+    assignees: task.assignees.map(String),
+  };
+
   let addedReceipts = [];
   if (patch.assignees !== undefined) {
     await validateAssignees(patch.assignees);
@@ -362,7 +371,17 @@ async function updateTaskFields(taskId, patch, { actor, withReceipts = false } =
   if (addedReceipts.length > 0) {
     await receiptService.notifyNewReceipts(task, addedReceipts, actor);
   }
-  return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate(RECEIPT_USERS);
+  const afterAssignees = task.assignees.map(String);
+  const changes = {
+    fields: ['title', 'responsibility']
+      .filter((field) => task[field] !== before[field])
+      .concat((task.deadline ? new Date(task.deadline).getTime() : null) !== before.deadline ? ['deadline'] : []),
+    addedAssignees: afterAssignees.filter((id) => !before.assignees.includes(id)),
+    removedAssignees: before.assignees.filter((id) => !afterAssignees.includes(id)),
+  };
+  const updated = await Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate(RECEIPT_USERS);
+  updated.$locals.changes = changes;
+  return updated;
 }
 
 // docs/06-backend.md §4.3 (corrected): closing DOES recompute timeStatus and performanceRating,
