@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Task = require('../models/Task');
 const taskService = require('./task.service');
+const { isEstimateRating } = require('../utils/syntheticRating');
 
 const STATUS_KEYS = ['ongoing', 'pending', 'complete', 'closed'];
 const PERFORMANCE_KEYS = ['excellent', 'good', 'fair', 'weak'];
@@ -89,7 +90,8 @@ function buildRatingKpis(tasks) {
     bands,
     ratedCount: rated.length,
     unratedCount: tasks.length - rated.length,
-    syntheticCount: rated.filter((task) => task.syntheticRating?.isSynthetic === true).length,
+    // Ratings that are still an ESTIMATE. A FINAL one (an admin's edit) counts as a real rating.
+    syntheticCount: rated.filter((task) => isEstimateRating(task.syntheticRating)).length,
     averageEffectivePercent,
     overallQuality,
   };
@@ -126,7 +128,11 @@ async function computeSummaryForFilter(filter, ratingsFilter = filter) {
         },
       },
     ]),
-    Task.find(ratingsFilter).select('performanceRating completionPercent syntheticRating.isSynthetic syntheticRating.assumedPercent').lean(),
+    Task.find(ratingsFilter)
+      .select(
+        'performanceRating completionPercent syntheticRating.isSynthetic syntheticRating.assumedPercent syntheticRating.finalizedAt syntheticRating.history.by syntheticRating.history.toPercent'
+      )
+      .lean(),
   ]);
 
   const total = result.total[0]?.count ?? 0;

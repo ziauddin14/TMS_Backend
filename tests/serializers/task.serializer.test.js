@@ -74,15 +74,24 @@ describe('serializeTask', () => {
     expect(serializeTask(makeTask({ syntheticRating: undefined })).syntheticRating).toBeNull();
   });
 
-  it('a normal user gets isSynthetic, assumedPercent and assignedAt — nothing else', () => {
+  // This fixture's history holds an admin edit (80 -> 85), so its rating is FINAL — no longer an
+  // estimate (src/utils/syntheticRating.js). A still-estimated one is the next case.
+  it('a normal user gets isSynthetic, isFinal, assumedPercent and assignedAt — nothing else', () => {
     const { syntheticRating: exposed } = serializeTask(makeTask({ syntheticRating: syntheticRating() }), user);
-    expect(exposed).toEqual({ isSynthetic: true, assumedPercent: 80, assignedAt: ASSIGNED_AT });
+    expect(exposed).toEqual({ isSynthetic: false, isFinal: true, assumedPercent: 80, assignedAt: ASSIGNED_AT });
+  });
+
+  it('a rating the script assigned and nobody edited is still an estimate: isSynthetic true, isFinal false', () => {
+    const estimate = syntheticRating({ history: [syntheticRating().history[0]] });
+    const { syntheticRating: exposed } = serializeTask(makeTask({ syntheticRating: estimate }), user);
+    expect(exposed).toEqual({ isSynthetic: true, isFinal: false, assumedPercent: 80, assignedAt: ASSIGNED_AT });
   });
 
   it('an admin additionally gets the history, with `by` as a plain string — still no assignedBy or reason', () => {
     const { syntheticRating: exposed } = serializeTask(makeTask({ syntheticRating: syntheticRating() }), admin);
     expect(exposed).toEqual({
-      isSynthetic: true,
+      isSynthetic: false,
+      isFinal: true,
       assumedPercent: 80,
       assignedAt: ASSIGNED_AT,
       history: [
@@ -101,7 +110,7 @@ describe('serializeTask', () => {
 
   it('a synthetic rating that is no longer in force is still reported, as isSynthetic: false', () => {
     const exposed = serializeTask(makeTask({ syntheticRating: syntheticRating({ isSynthetic: false }) }), user).syntheticRating;
-    expect(exposed).toEqual({ isSynthetic: false, assumedPercent: 80, assignedAt: ASSIGNED_AT });
+    expect(exposed).toEqual({ isSynthetic: false, isFinal: false, assumedPercent: 80, assignedAt: ASSIGNED_AT });
   });
 
   it('keeps the REAL completion percent and status exactly as stored, next to a synthetic rating', () => {

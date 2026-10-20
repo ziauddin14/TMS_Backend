@@ -222,16 +222,21 @@ describe('action hooks — the right type, small safe metadata', () => {
   it('estimate edited / removed: the percentages only', async () => {
     const admin = await makeAdmin();
     const user = await makeUser();
-    const task = await makeTask(admin, [user]);
-    await Task.updateOne({ _id: task.id }, { $set: { status: 'closed', performanceRating: 'good', syntheticRating: { isSynthetic: true, assumedPercent: 80, assignedAt: new Date(), assignedBy: 'system:script', history: [] } } });
+    // Two estimates: an edit makes a rating final (it can no longer be removed), so the removal is
+    // made on the other one.
+    const edited1 = await makeTask(admin, [user]);
+    const removed1 = await makeTask(admin, [user]);
+    const estimate = (assumedPercent) => ({ status: 'closed', performanceRating: 'good', syntheticRating: { isSynthetic: true, assumedPercent, assignedAt: new Date(), assignedBy: 'system:script', history: [] } });
+    await Task.updateOne({ _id: edited1.id }, { $set: estimate(80) });
+    await Task.updateOne({ _id: removed1.id }, { $set: estimate(85) });
 
-    await request(app).patch(`/api/v1/tasks/${task.id}/synthetic-rating`).set(as(admin)).send({ assumedPercent: 92 }).expect(200);
-    await request(app).delete(`/api/v1/tasks/${task.id}/synthetic-rating`).set(as(admin)).expect(200);
+    await request(app).patch(`/api/v1/tasks/${edited1.id}/synthetic-rating`).set(as(admin)).send({ assumedPercent: 92 }).expect(200);
+    await request(app).delete(`/api/v1/tasks/${removed1.id}/synthetic-rating`).set(as(admin)).expect(200);
 
     const [edited] = await events('SYNTHETIC_RATING_EDITED');
     const [removed] = await events('SYNTHETIC_RATING_REMOVED');
-    expect(edited.metadata).toEqual({ taskCode: task.codeNumber, fromPercent: 80, toPercent: 92 });
-    expect(removed.metadata).toEqual({ taskCode: task.codeNumber, fromPercent: 92 });
+    expect(edited.metadata).toEqual({ taskCode: edited1.codeNumber, fromPercent: 80, toPercent: 92 });
+    expect(removed.metadata).toEqual({ taskCode: removed1.codeNumber, fromPercent: 85 });
   });
 
   it('a manual notification: mode, count and template — never the message', async () => {

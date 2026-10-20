@@ -13,10 +13,15 @@
 // - Idempotent: a task that is already synthetic, or whose ledger record already exists, is skipped.
 // - Rollback restores from the ledger's stored previous values, and never overwrites a rating that
 //   has changed since (a real update or close in the meantime) — it only removes the marker then.
+// - Rollback never touches a FINAL rating (an admin changed it — src/utils/syntheticRating.js), in
+//   the dry run or the real run: the task and its ledger record stay byte-identical, and it is
+//   reported as skipped. An admin's decision can never be overwritten by a rollback. (The writer
+//   never re-assigns over one either: a final rating is still synthetic, so assignOne skips it.)
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Task = require('../../src/models/Task');
 const HistoricalImportRecord = require('../../src/models/HistoricalImportRecord');
+const { isFinalRating } = require('../../src/utils/syntheticRating');
 const { isUnrated, isSynthetic, ledgerKeyFor, LEDGER_ACTION, LEDGER_ACTION_ROLLED_BACK } = require('./plan');
 
 const CHANGED_FIELDS = ['performanceRating', 'syntheticRating'];
@@ -132,6 +137,12 @@ async function applyPlan(plan, { importBatch, neverTouchCodes, log = () => {} })
 function planRollback(record, task) {
   if (!task) return { action: 'ledger-only', detail: 'task no longer exists — only the ledger record is closed' };
   if (!task.syntheticRating) return { action: 'ledger-only', detail: 'task carries no synthetic rating any more — only the ledger record is closed' };
+  if (isFinalRating(task.syntheticRating)) {
+    return {
+      action: 'skip-finalized',
+      detail: `the rating is final — an admin set it to ${task.syntheticRating.assumedPercent}% ("${task.performanceRating}"); the task and its ledger record are left exactly as they are`,
+    };
+  }
 
   const untouchedSinceAssignment =
     isSynthetic(task) &&
@@ -155,6 +166,8 @@ async function rollbackOne(recordId, now, session) {
 
   const before = await Task.findById(record.targetId).session(session).lean();
   const decision = planRollback(record, before);
+  // A final rating: nothing is written — not the task, not the ledger record.
+  if (decision.action === 'skip-finalized') return { outcome: 'skipped', reason: decision.detail };
   let restoredExactly = null;
 
   if (decision.action !== 'ledger-only') {
@@ -205,7 +218,7 @@ async function rollbackAll({ now, log = () => {} }) {
     } else if (outcome.outcome === 'remove-marker-only') result.markerOnly += 1;
     else if (outcome.outcome === 'ledger-only') result.ledgerOnly += 1;
     else result.skipped.push({ code: record.taskCode, reason: outcome.reason });
-    log(`rollback ${record.taskCode}: ${outcome.outcome}${outcome.detail ? ` — ${outcome.detail}` : ''}`);
+    log(`rollback ${record.taskCode}: ${outcome.outcome}${outcome.detail || outcome.reason ? ` — ${outcome.detail || outcome.reason}` : ''}`);
   }
 
   return result;

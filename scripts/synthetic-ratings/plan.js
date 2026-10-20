@@ -3,8 +3,9 @@
 // unit-testable and a dry run can never write). scripts/assign-synthetic-ratings.js loads the data
 // and, only with --commit, hands this plan to commit.js.
 const { ratingForPercent } = require('../../src/services/task.service');
+const { ASSIGN_LEDGER_ACTION, isFinalRating } = require('../../src/utils/syntheticRating');
 
-const LEDGER_ACTION = 'synthetic-rating';
+const LEDGER_ACTION = ASSIGN_LEDGER_ACTION;
 const LEDGER_ACTION_ROLLED_BACK = 'synthetic-rating-rolled-back';
 const ledgerKeyFor = (code) => `${LEDGER_ACTION}:${code}`;
 
@@ -43,7 +44,10 @@ function buildPlan({ tasks, importRecords, ratingRecords, config, now }) {
   const excludedCodes = config.excludedCodes || {};
 
   const groups = Object.fromEntries(
-    config.groups.map((g) => [g.key, { ...g, rating: ratingForPercent(g.assumedPercent), toAssign: [], alreadySynthetic: [], replacedByReal: [] }])
+    config.groups.map((g) => [
+      g.key,
+      { ...g, rating: ratingForPercent(g.assumedPercent), toAssign: [], alreadySynthetic: [], finalizedByAdmin: [], replacedByReal: [] },
+    ])
   );
   const neverTouched = [];
   const excluded = [];
@@ -68,7 +72,11 @@ function buildPlan({ tasks, importRecords, ratingRecords, config, now }) {
 
     if (isSynthetic(task)) {
       const group = ratingRecord ? groups[ratingRecord.next?.group] : null;
-      if (group) group.alreadySynthetic.push(summarize(task));
+      // A FINAL rating (an admin changed it — src/utils/syntheticRating.js) is listed on its own:
+      // it is never planned again, and the rollback never touches it.
+      if (group && isFinalRating(task.syntheticRating)) {
+        group.finalizedByAdmin.push({ ...summarize(task), assumedPercent: task.syntheticRating.assumedPercent, finalizedAt: task.syntheticRating.finalizedAt ?? null });
+      } else if (group) group.alreadySynthetic.push(summarize(task));
       else anomalies.push(`${task.codeNumber}: carries a synthetic rating but has no matching ledger record`);
       return;
     }
@@ -142,12 +150,13 @@ function buildPlan({ tasks, importRecords, ratingRecords, config, now }) {
   const check = (label, ok, detail) => checks.push({ label, ok, detail });
 
   Object.values(groups).forEach((g) => {
-    const found = g.toAssign.length + g.alreadySynthetic.length + g.replacedByReal.length;
+    const found = g.toAssign.length + g.alreadySynthetic.length + g.finalizedByAdmin.length + g.replacedByReal.length;
+    const finalized = g.finalizedByAdmin.length ? `, ${g.finalizedByAdmin.length} finalized by an admin` : '';
     const replaced = g.replacedByReal.length ? `, ${g.replacedByReal.length} since replaced by a real rating` : '';
     check(
       `${g.label}: exactly ${g.expectedCount} task(s)`,
       found === g.expectedCount,
-      `found ${found} (${g.toAssign.length} to assign, ${g.alreadySynthetic.length} already synthetic${replaced})`
+      `found ${found} (${g.toAssign.length} to assign, ${g.alreadySynthetic.length} already synthetic${finalized}${replaced})`
     );
   });
   check(
@@ -194,6 +203,7 @@ function buildPlan({ tasks, importRecords, ratingRecords, config, now }) {
       tasks: tasks.length,
       toAssign: items.length,
       alreadySynthetic: Object.values(groups).reduce((n, g) => n + g.alreadySynthetic.length, 0),
+      finalizedByAdmin: Object.values(groups).reduce((n, g) => n + g.finalizedByAdmin.length, 0),
       replacedByReal: Object.values(groups).reduce((n, g) => n + g.replacedByReal.length, 0),
     },
   };

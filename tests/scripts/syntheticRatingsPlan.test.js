@@ -50,7 +50,7 @@ describe('synthetic ratings — buildPlan', () => {
       ['250103', 'pending', 40, 'weak'],
       ['250104', 'ongoing', 70, 'fair'],
     ]);
-    expect(p.totals).toEqual({ tasks: 6, toAssign: 4, alreadySynthetic: 0, replacedByReal: 0 });
+    expect(p.totals).toEqual({ tasks: 6, toAssign: 4, alreadySynthetic: 0, finalizedByAdmin: 0, replacedByReal: 0 });
   });
 
   it('uses the plain thresholds with NO late downgrade — a late closed task still gets "good" for 80%', () => {

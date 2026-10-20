@@ -136,7 +136,10 @@ async function runAssign(args, now) {
 
   console.log(`${mode}: ${plan.totals.toAssign} task(s) to assign, ${plan.totals.alreadySynthetic} already synthetic, ${plan.totals.tasks} tasks in the database`);
   Object.values(plan.groups).forEach((g) =>
-    console.log(`  ${g.label}: ${g.toAssign.length} to assign → ${g.rating} (assumed ${g.assumedPercent}%), ${g.alreadySynthetic.length} already synthetic, expected ${g.expectedCount}`)
+    console.log(
+      `  ${g.label}: ${g.toAssign.length} to assign → ${g.rating} (assumed ${g.assumedPercent}%), ${g.alreadySynthetic.length} already synthetic, ` +
+        `${g.finalizedByAdmin.length} finalized by an admin, expected ${g.expectedCount}`
+    )
   );
   plan.checks.forEach((c) => console.log(`${c.ok ? 'OK  ' : 'FAIL'} ${c.label}${c.detail ? ` — ${c.detail}` : ''}`));
   console.log(`Excluded (stay unrated): ${plan.excluded.map((t) => t.code).join(', ') || 'none'}`);
