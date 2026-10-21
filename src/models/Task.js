@@ -40,6 +40,11 @@ const syntheticRatingSchema = new Schema(
     assignedBy: { type: Schema.Types.Mixed, required: true },
     reason: { type: String, default: null },
     history: { type: [syntheticRatingHistorySchema], default: [] },
+    // Set by an admin's edit (PATCH /tasks/:id/synthetic-rating): the rating is FINAL from then on —
+    // no longer an estimate (utils/syntheticRating.js). Absent on every other synthetic rating, and
+    // no default on purpose, so nothing is ever written onto an existing document.
+    finalizedAt: { type: Date },
+    finalizedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },
   { _id: false }
 );
@@ -110,6 +115,8 @@ const taskSchema = new Schema(
 // The percentage a task should be counted at: the developer-assumed one while the task carries a
 // synthetic rating, otherwise its real completionPercent. A plain accessor (works on a document or
 // a lean object), kept here so it is the one place any future KPI maths takes a percentage from.
+// A FINAL synthetic rating (an admin's edit — utils/syntheticRating.js) keeps isSynthetic true, so
+// its effective percent is the percent the admin entered, as intended.
 taskSchema.statics.getEffectivePercent = function getEffectivePercent(task) {
   return task?.syntheticRating?.isSynthetic ? task.syntheticRating.assumedPercent : task.completionPercent;
 };

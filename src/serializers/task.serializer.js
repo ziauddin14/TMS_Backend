@@ -2,6 +2,8 @@
 // one (task.controller.js, and taskUpdate.controller.js's POST /tasks/:id/updates), so they can
 // never drift apart. `viewer` is the requesting user (req.user): it only decides how much of a
 // synthetic rating's detail is included.
+const { isEstimateRating, isFinalRating } = require('../utils/syntheticRating');
+
 function serializeAssignee(user) {
   return { id: user.id, name: user.name, responsibility: user.responsibility };
 }
@@ -10,11 +12,16 @@ function serializeAssignee(user) {
 // never had one. Everyone who can see the task sees that its rating is synthetic and from what
 // assumed percentage; who assigned it and why (assignedBy, reason) stay server-side; the change
 // history is for admins only.
+//   isSynthetic — the rating is STILL AN ESTIMATE (utils/syntheticRating.js): the badge, the edit
+//                 action and the estimate counts all follow it. False for a FINAL rating.
+//   isFinal     — an admin changed it: shown and counted as a real rating, and it can no longer be
+//                 changed or removed.
 function serializeSyntheticRating(syntheticRating, viewer) {
   if (!syntheticRating) return null;
 
   const serialized = {
-    isSynthetic: syntheticRating.isSynthetic === true,
+    isSynthetic: isEstimateRating(syntheticRating),
+    isFinal: isFinalRating(syntheticRating),
     assumedPercent: syntheticRating.assumedPercent,
     assignedAt: syntheticRating.assignedAt,
   };

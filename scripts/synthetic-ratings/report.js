@@ -64,13 +64,25 @@ function renderAssignReport(plan, { meta, references, result, protectedCheck }) 
   out.push('\n## Groups\n');
   out.push(
     table(
-      ['Group', 'Assumed %', 'New rating', 'Expected', 'To assign now', 'Already synthetic', 'Since replaced by a real rating'],
-      Object.values(plan.groups).map((g) => [g.label, `${g.assumedPercent}%`, showRating(g.rating), g.expectedCount, g.toAssign.length, g.alreadySynthetic.length, g.replacedByReal.length])
+      ['Group', 'Assumed %', 'New rating', 'Expected', 'To assign now', 'Already synthetic', 'Finalized by an admin', 'Since replaced by a real rating'],
+      Object.values(plan.groups).map((g) => [
+        g.label,
+        `${g.assumedPercent}%`,
+        showRating(g.rating),
+        g.expectedCount,
+        g.toAssign.length,
+        g.alreadySynthetic.length,
+        g.finalizedByAdmin.length,
+        g.replacedByReal.length,
+      ])
     )
   );
-  out.push(`\nTotal to assign now: **${plan.totals.toAssign}** · already synthetic: ${plan.totals.alreadySynthetic} · since replaced by a real rating: ${plan.totals.replacedByReal} · tasks in the database: ${plan.totals.tasks}`);
+  out.push(
+    `\nTotal to assign now: **${plan.totals.toAssign}** · already synthetic: ${plan.totals.alreadySynthetic} · finalized by an admin: ${plan.totals.finalizedByAdmin} · since replaced by a real rating: ${plan.totals.replacedByReal} · tasks in the database: ${plan.totals.tasks}`
+  );
   out.push('\nRating rule: the same thresholds as a real rating (≥90 ممتاز, ≥80 بہتر, ≥70 مناسب, <70 کمزور), applied to the assumed percentage, with **no late downgrade**.');
   out.push('\nAfterwards, in the app: an update on an open task keeps the synthetic rating; the moment the task earns a real rating (it is closed, or an update takes it to 100%), the real rating replaces it, `syntheticRating.isSynthetic` becomes `false` and the replacement is added to its history.');
+  out.push('\nAn admin who changes a synthetic rating makes it **final**: it is no longer an estimate, cannot be changed or removed again, is never replaced by a real rating, and is never touched by this script (assign or rollback).');
 
   out.push('\n## Sample — 5 tasks per group\n');
   Object.values(plan.groups).forEach((g) => {
@@ -87,7 +99,25 @@ function renderAssignReport(plan, { meta, references, result, protectedCheck }) 
   });
 
   out.push('## Left untouched\n');
-  out.push(`### The ${plan.realRated.length} really-rated tasks — not in the plan\n`);
+  const finalizedByAdmin = Object.values(plan.groups).flatMap((g) => g.finalizedByAdmin.map((t) => ({ ...t, group: g.label })));
+  out.push(`### Finalized by an admin — ${finalizedByAdmin.length} task(s), never planned again and never rolled back\n`);
+  out.push(
+    finalizedByAdmin.length
+      ? table(
+          ['Code', 'Group', 'Status', 'Real %', 'Final rating', 'Final %', 'Finalized'],
+          finalizedByAdmin.map((t) => [
+            t.code,
+            t.group,
+            t.status,
+            `${t.completionPercent}%`,
+            showRating(t.performanceRating),
+            `${t.assumedPercent}%`,
+            t.finalizedAt ? new Date(t.finalizedAt).toISOString() : 'before this marker existed (from its history)',
+          ])
+        )
+      : '_none_'
+  );
+  out.push(`\n### The ${plan.realRated.length} really-rated tasks — not in the plan\n`);
   out.push(
     table(
       ['Code', 'Status', 'Real %', 'Real rating'],
@@ -166,6 +196,9 @@ function renderRollbackReport(rows, { meta, result }) {
     out.push('\n## Rollback result\n');
     out.push(`- backup: \`${result.backupDir}\``);
     out.push(`- restored: **${result.restored}** · marker removed only: ${result.markerOnly} · ledger only: ${result.ledgerOnly} · skipped: ${result.skipped.length}`);
+    if (result.skipped.length) {
+      out.push(`- skipped (nothing written): ${result.skipped.map((s) => `${s.code} (${s.reason})`).join('; ')}`);
+    }
     if (result.notRestoredExactly.length) {
       out.push(`- restored, but the document differs from its pre-assignment state in some OTHER field (changed by the live app since): ${result.notRestoredExactly.join(', ')}`);
     }

@@ -2,8 +2,17 @@ const mongoose = require('mongoose');
 const Task = require('../models/Task');
 const User = require('../models/User');
 const Counter = require('../models/Counter');
+const HistoricalImportRecord = require('../models/HistoricalImportRecord');
 const AppError = require('../utils/AppError');
 const logger = require('../utils/logger');
+const {
+  ESTIMATE_CONDITION,
+  NOT_ESTIMATE_CONDITION,
+  ASSIGN_LEDGER_ACTION,
+  FINALIZED_LEDGER_ACTION,
+  FINALIZED_LEDGER_BATCH,
+  isFinalRating,
+} = require('../utils/syntheticRating');
 const receiptService = require('./receipt.service');
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -108,6 +117,9 @@ function computePerformanceRating(completionPercent, timeStatus, status) {
 //   complete), that real rating replaces the synthetic one: performanceRating is overwritten,
 //   syntheticRating.isSynthetic becomes false, and the replacement is recorded in its history.
 //   The rest of syntheticRating is kept as the record of what was once assumed.
+// - A FINAL synthetic rating (an admin changed it — utils/syntheticRating.js) is never replaced:
+//   the admin's decision stands, whatever the formula would give. Status, timeStatus, closedAt and
+//   completionPercent still change as normal; only the rating (and so the effective percent) stays.
 //
 // A task with no synthetic rating (or one already retired) gets the formula's value, as always.
 function applyComputedRating(task, { actorId, note, now = new Date() }) {
@@ -118,6 +130,7 @@ function applyComputedRating(task, { actorId, note, now = new Date() }) {
     return;
   }
   if (realRating === '-') return;
+  if (isFinalRating(task.syntheticRating)) return;
 
   task.syntheticRating.history.push({
     at: now,
@@ -208,14 +221,15 @@ function buildTaskFilter(requestingUser, filters) {
   if (performanceRating) filter.performanceRating = performanceRating;
   if (responsibility) filter.responsibility = responsibility;
 
-  // Where a rating came from: a developer-assigned (synthetic) one, or a real one — i.e. rated
-  // AND not synthetic. Written as its own clause so it simply combines with a performanceRating
-  // filter (a real rating that is also "-" correctly matches nothing).
+  // Where a rating came from: a developer-assigned one that is still an ESTIMATE, or a real one —
+  // i.e. rated AND not an estimate, which includes a FINAL synthetic rating (an admin's edit —
+  // utils/syntheticRating.js). Written as $and clauses so they simply combine with a
+  // performanceRating filter (a real rating that is also "-" correctly matches nothing) and with
+  // the search's own $or.
   if (ratingSource === 'synthetic') {
-    filter['syntheticRating.isSynthetic'] = true;
+    filter.$and = [ESTIMATE_CONDITION];
   } else if (ratingSource === 'real') {
-    filter['syntheticRating.isSynthetic'] = { $ne: true };
-    filter.$and = [{ performanceRating: { $ne: '-' } }];
+    filter.$and = [{ performanceRating: { $ne: '-' } }, NOT_ESTIMATE_CONDITION];
   }
 
   if (deadlineFrom || deadlineTo) {
@@ -412,7 +426,16 @@ async function closeTask(adminUser, taskId) {
 // move: not status, completionPercent, lastUpdateAt, timeStatus or updatedAt. No TaskUpdate is
 // created and no notification is sent. The history entry (who, when, from → to, note) is the audit
 // trail; a log line records it server-side as well.
-async function findTaskWithSyntheticRating(taskId) {
+//
+// Only a rating that is still an ESTIMATE can be edited or removed. An edit makes it FINAL
+// (utils/syntheticRating.js): it is no longer an estimate, and both endpoints refuse it from then
+// on with 409 SYNTHETIC_RATING_FINAL. The edit is also written to the HistoricalImportRecord ledger
+// (action 'synthetic-rating-finalized'), in the same transaction as the task.
+const FINAL_RATING_MESSAGE = 'This rating is final and can no longer be changed.';
+const finalRatingError = () => new AppError(FINAL_RATING_MESSAGE, 409, 'SYNTHETIC_RATING_FINAL');
+const notSyntheticError = () => new AppError('This task does not have a synthetic rating.', 409, 'NOT_SYNTHETIC_RATING');
+
+async function findTaskWithEstimate(taskId) {
   if (!mongoose.Types.ObjectId.isValid(taskId)) {
     throw new AppError('Task not found.', 404, 'TASK_NOT_FOUND');
   }
@@ -420,54 +443,89 @@ async function findTaskWithSyntheticRating(taskId) {
   if (!task) {
     throw new AppError('Task not found.', 404, 'TASK_NOT_FOUND');
   }
-  if (task.syntheticRating?.isSynthetic !== true) {
-    throw new AppError('This task does not have a synthetic rating.', 409, 'NOT_SYNTHETIC_RATING');
-  }
+  if (task.syntheticRating?.isSynthetic !== true) throw notSyntheticError();
+  if (isFinalRating(task.syntheticRating)) throw finalRatingError();
   return task;
 }
 
-async function writeSyntheticRatingChange(task, adminUser, { set, historyEntry }) {
-  const result = await Task.updateOne(
-    // Still synthetic at the moment of writing — a real close in between must win, not be overwritten.
-    { _id: task._id, 'syntheticRating.isSynthetic': true },
-    { $set: set, $push: { 'syntheticRating.history': historyEntry } },
-    { timestamps: false, runValidators: true }
-  );
-  if (result.matchedCount !== 1) {
-    throw new AppError('This task does not have a synthetic rating.', 409, 'NOT_SYNTHETIC_RATING');
+// The write matches only while the rating is STILL AN ESTIMATE at that moment: a real close in
+// between wins instead of being overwritten, and of two simultaneous edits exactly one matches —
+// the first one's finalizedAt and history entry make the second miss (it gets the 409). The ledger
+// record, when there is one, is committed with the task or not at all.
+async function writeSyntheticRatingChange(task, adminUser, { set, historyEntry, ledgerRecord }) {
+  const session = await mongoose.startSession();
+  let matched = 0;
+  try {
+    await session.withTransaction(async () => {
+      const result = await Task.updateOne(
+        { _id: task._id, ...ESTIMATE_CONDITION },
+        { $set: set, $push: { 'syntheticRating.history': historyEntry } },
+        { session, timestamps: false, runValidators: true }
+      );
+      matched = result.matchedCount;
+      if (matched === 1 && ledgerRecord) await HistoricalImportRecord.create([ledgerRecord], { session });
+    });
+  } finally {
+    await session.endSession();
+  }
+  if (matched !== 1) {
+    const current = await Task.findById(task._id).select('syntheticRating').lean();
+    throw isFinalRating(current?.syntheticRating) ? finalRatingError() : notSyntheticError();
   }
   logger.info(
-    `Synthetic rating ${historyEntry.toRating === '-' ? 'removed' : 'changed'} on task ${task.codeNumber} by ${adminUser.id}: ` +
+    `Synthetic rating ${historyEntry.toRating === '-' ? 'removed' : 'finalized'} on task ${task.codeNumber} by ${adminUser.id}: ` +
       `${historyEntry.fromPercent}% (${historyEntry.fromRating}) → ${historyEntry.toPercent === null ? 'none' : `${historyEntry.toPercent}%`} (${historyEntry.toRating})`
   );
   return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate(RECEIPT_USERS);
 }
 
-// PATCH /tasks/:id/synthetic-rating — a new assumed percentage. The rating is the plain threshold
-// rating of that percentage (ratingForPercent): no late downgrade, exactly as when it was assigned.
+// PATCH /tasks/:id/synthetic-rating — a new percentage, and the rating becomes FINAL. The rating is
+// the plain threshold rating of that percentage (ratingForPercent): no late downgrade, exactly as
+// when it was assigned, so the band saved is the band the admin saw.
 async function editSyntheticRating(adminUser, taskId, { assumedPercent, note }) {
-  const task = await findTaskWithSyntheticRating(taskId);
+  const task = await findTaskWithEstimate(taskId);
   const toRating = ratingForPercent(assumedPercent);
+  const now = new Date();
+  const adminId = new mongoose.Types.ObjectId(adminUser.id);
+  const assignment = await HistoricalImportRecord.findOne({ targetId: task._id, action: ASSIGN_LEDGER_ACTION }).select('personKey').lean();
+  const previous = { performanceRating: task.performanceRating, assumedPercent: task.syntheticRating.assumedPercent };
 
   return writeSyntheticRatingChange(task, adminUser, {
-    set: { performanceRating: toRating, 'syntheticRating.assumedPercent': assumedPercent },
+    set: {
+      performanceRating: toRating,
+      'syntheticRating.assumedPercent': assumedPercent,
+      'syntheticRating.finalizedAt': now,
+      'syntheticRating.finalizedBy': adminId,
+    },
     historyEntry: {
-      at: new Date(),
-      by: new mongoose.Types.ObjectId(adminUser.id),
-      fromPercent: task.syntheticRating.assumedPercent,
+      at: now,
+      by: adminId,
+      fromPercent: previous.assumedPercent,
       toPercent: assumedPercent,
-      fromRating: task.performanceRating,
+      fromRating: previous.performanceRating,
       toRating,
       note: note || null,
+    },
+    ledgerRecord: {
+      importBatch: FINALIZED_LEDGER_BATCH,
+      sourceKey: `${FINALIZED_LEDGER_ACTION}:${task.codeNumber}`,
+      kind: 'syntheticRating',
+      action: FINALIZED_LEDGER_ACTION,
+      targetId: task._id,
+      taskCode: task.codeNumber,
+      personKey: assignment?.personKey || 'app:admin-edit',
+      flags: { finalizedBy: adminId },
+      previous: { ...previous, isSynthetic: true },
+      next: { performanceRating: toRating, assumedPercent, finalizedAt: now, finalizedBy: adminId, note: note || null },
     },
   });
 }
 
 // DELETE /tasks/:id/synthetic-rating — the task goes back to unrated ('-'). The subdocument is
 // kept, switched off, as the record of what was once assumed; from here on the task is rated (or
-// not) by the real formula like any other.
+// not) by the real formula like any other. Only an estimate can be removed — never a final rating.
 async function removeSyntheticRating(adminUser, taskId, { note } = {}) {
-  const task = await findTaskWithSyntheticRating(taskId);
+  const task = await findTaskWithEstimate(taskId);
 
   return writeSyntheticRatingChange(task, adminUser, {
     set: { performanceRating: '-', 'syntheticRating.isSynthetic': false },

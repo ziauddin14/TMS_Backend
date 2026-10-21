@@ -74,7 +74,7 @@ describe('task responses — what is exposed about a synthetic rating', () => {
     const res = await request(app).get(`/api/v1/tasks/${closedSynthetic.id}`).set(auth(assignee));
 
     expect(res.status).toBe(200);
-    expect(res.body.data.syntheticRating).toEqual({ isSynthetic: true, assumedPercent: 80, assignedAt: ASSIGNED_AT.toISOString() });
+    expect(res.body.data.syntheticRating).toEqual({ isSynthetic: true, isFinal: false, assumedPercent: 80, assignedAt: ASSIGNED_AT.toISOString() });
     expect(JSON.stringify(res.body)).not.toMatch(/assignedBy|system:script|internal reason|history/);
     // The real fields are still there, untouched: a closed task at a real 0% rated "good".
     expect(res.body.data).toMatchObject({ status: 'closed', completionPercent: 0, performanceRating: 'good' });
@@ -87,6 +87,7 @@ describe('task responses — what is exposed about a synthetic rating', () => {
 
     expect(res.body.data.syntheticRating).toEqual({
       isSynthetic: true,
+      isFinal: false,
       assumedPercent: 80,
       assignedAt: ASSIGNED_AT.toISOString(),
       history: [{ at: ASSIGNED_AT.toISOString(), by: 'system:script', fromPercent: null, toPercent: 80, fromRating: '-', toRating: 'good', note: 'initial synthetic rating' }],
@@ -110,8 +111,8 @@ describe('task responses — what is exposed about a synthetic rating', () => {
     const forAdmin = await request(app).get('/api/v1/tasks?sortBy=codeNumber').set(auth(admin));
 
     expect(forUser.body.data.map((t) => t.syntheticRating && Object.keys(t.syntheticRating).sort())).toEqual([
-      ['assignedAt', 'assumedPercent', 'isSynthetic'],
-      ['assignedAt', 'assumedPercent', 'isSynthetic'],
+      ['assignedAt', 'assumedPercent', 'isFinal', 'isSynthetic'],
+      ['assignedAt', 'assumedPercent', 'isFinal', 'isSynthetic'],
       null,
       null,
     ]);
@@ -127,7 +128,7 @@ describe('task responses — what is exposed about a synthetic rating', () => {
       .send({ description: 'کام جاری ہے', completionPercent: 30 });
 
     expect(res.status).toBe(201);
-    expect(res.body.data.task.syntheticRating).toEqual({ isSynthetic: true, assumedPercent: 40, assignedAt: ASSIGNED_AT.toISOString() });
+    expect(res.body.data.task.syntheticRating).toEqual({ isSynthetic: true, isFinal: false, assumedPercent: 40, assignedAt: ASSIGNED_AT.toISOString() });
     expect(res.body.data.task.performanceRating).toBe('weak'); // the rule: an update on an open task keeps it
   });
 });
@@ -178,7 +179,8 @@ describe('PATCH /api/v1/tasks/:id/synthetic-rating — admin edit', () => {
     expect(res.body.success).toBe(true);
     // 92 -> excellent. The task was closed LATE: a real rating would have been downgraded to good.
     expect(res.body.data).toMatchObject({ performanceRating: 'excellent', status: 'closed', completionPercent: 0 });
-    expect(res.body.data.syntheticRating).toMatchObject({ isSynthetic: true, assumedPercent: 92, assignedAt: ASSIGNED_AT.toISOString() });
+    // The edit makes the rating FINAL: no longer an estimate in the response, still synthetic in the store.
+    expect(res.body.data.syntheticRating).toMatchObject({ isSynthetic: false, isFinal: true, assumedPercent: 92, assignedAt: ASSIGNED_AT.toISOString() });
     const stored = await lean(closedSynthetic);
     expect(stored.performanceRating).toBe('excellent');
     expect(stored.syntheticRating).toMatchObject({ isSynthetic: true, assumedPercent: 92, assignedBy: 'system:script', reason: 'internal reason' });
