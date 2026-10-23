@@ -170,19 +170,19 @@ describe('PATCH /api/v1/tasks/:id/synthetic-rating — admin edit', () => {
     expect(fingerprint(await lean(closedSynthetic))).toBe(fingerprint(before));
   });
 
-  it('sets the new assumed percent and recomputes the rating from the thresholds — with no late downgrade', async () => {
+  it('sets the new percent and rates it like a real rating — the task was completed late, so one level down', async () => {
     const { admin, closedSynthetic } = await seed();
 
     const res = await request(app).patch(url(closedSynthetic)).set(auth(admin)).send({ assumedPercent: 92, note: 'جائزے کے بعد' });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    // 92 -> excellent. The task was closed LATE: a real rating would have been downgraded to good.
-    expect(res.body.data).toMatchObject({ performanceRating: 'excellent', status: 'closed', completionPercent: 0 });
+    // 92 -> excellent, and the task was closed LATE: the final rating drops one level, to good.
+    expect(res.body.data).toMatchObject({ performanceRating: 'good', status: 'closed', completionPercent: 0 });
     // The edit makes the rating FINAL: no longer an estimate in the response, still synthetic in the store.
     expect(res.body.data.syntheticRating).toMatchObject({ isSynthetic: false, isFinal: true, assumedPercent: 92, assignedAt: ASSIGNED_AT.toISOString() });
     const stored = await lean(closedSynthetic);
-    expect(stored.performanceRating).toBe('excellent');
+    expect(stored.performanceRating).toBe('good');
     expect(stored.syntheticRating).toMatchObject({ isSynthetic: true, assumedPercent: 92, assignedBy: 'system:script', reason: 'internal reason' });
   });
 

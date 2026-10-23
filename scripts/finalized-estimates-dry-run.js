@@ -32,6 +32,7 @@ const LIST_TITLES = {
   editedThenReplacedByReal: '3. Edited by an admin, then replaced by a real rating — nothing changes (for information)',
   ambiguous: '4. AMBIGUOUS — the rule cannot classify these with confidence; please review each one',
   activityWithoutHistory: '5. Activity-log edits with no matching admin edit in the task history',
+  bandWouldChange: '6. Final ratings whose band would change under the late rule — what fix-final-rating-late-downgrade.js corrects',
 };
 
 function parseArgs(argv) {
@@ -64,7 +65,7 @@ async function main() {
   try {
     const [tasks, assignRecords, activityEvents] = await Promise.all([
       Task.find({ syntheticRating: { $exists: true } })
-        .select('codeNumber status completionPercent performanceRating syntheticRating')
+        .select('codeNumber status completionPercent performanceRating syntheticRating timeStatus')
         .lean(),
       HistoricalImportRecord.find({ action: ASSIGN_LEDGER_ACTION }).select('targetId taskCode next').lean(),
       ActivityEvent.find({ type: ACTIVITY_TYPES.SYNTHETIC_RATING_EDITED }).select('user at taskId metadata').lean(),
@@ -80,6 +81,8 @@ async function main() {
     console.log(`\nTasks with a synthetic rating: ${totals.tasksWithSyntheticRating} · still estimates after the deploy: ${totals.stillEstimates}`);
     console.log(`Dashboard "تخمینی" count over all tasks: ${totals.estimatedRatingsShownBefore} now → ${totals.estimatedRatingsShownAfter} after the deploy`);
     Object.keys(LIST_TITLES).forEach((key) => printList(key, lists[key]));
+    const changes = Object.entries(totals.bandChanges);
+    console.log(`\nBand changes under the late rule (from → to): ${changes.length ? changes.map(([change, count]) => `${change}: ${count}`).join(' · ') : 'none'}`);
     console.log('\nDry run complete — nothing was written to the database.');
   } finally {
     await mongoose.connection.close();

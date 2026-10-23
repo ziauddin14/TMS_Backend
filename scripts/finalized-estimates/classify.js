@@ -14,7 +14,13 @@
 //   4. ambiguous             — data the rule cannot classify with confidence; decide by hand.
 //   5. activityWithoutHistory — an "estimate changed" entry in the activity log with no matching
 //                              admin edit in that task's history.
+//   6. bandWouldChange       — a final rating whose stored band differs from the late rule: rated
+//                              like a real rating with the admin's percent, ONE level down when the
+//                              task was completed late (src/services/task.service.js
+//                              computeFinalRating). These are what fix-final-rating-late-downgrade.js
+//                              corrects; the count per change (from → to) is in totals.bandChanges.
 const { isAdminEditEntry, isEstimateRating, isFinalRating } = require('../../src/utils/syntheticRating');
+const { computeFinalRating } = require('../../src/services/task.service');
 
 const KNOWN_STRING_AUTHORS = ['system:script', 'system'];
 const REPLACEMENT_NOTE = 'synthetic rating replaced by the real rating';
@@ -57,7 +63,7 @@ function editSummary(edits) {
 // activityEvents — ActivityEvent documents of type SYNTHETIC_RATING_EDITED, lean
 function classify({ tasks, assignRecords = [], activityEvents = [] }) {
   const assignByTaskId = new Map(assignRecords.map((record) => [String(record.targetId), record]));
-  const lists = { becomesFinal: [], editedThenRemoved: [], editedThenReplacedByReal: [], ambiguous: [], activityWithoutHistory: [] };
+  const lists = { becomesFinal: [], editedThenRemoved: [], editedThenReplacedByReal: [], ambiguous: [], activityWithoutHistory: [], bandWouldChange: [] };
   let stillEstimates = 0;
   let syntheticRatedBefore = 0;
   let syntheticRatedAfter = 0;
@@ -82,6 +88,19 @@ function classify({ tasks, assignRecords = [], activityEvents = [] }) {
       }
       if (isFinalRating(sr)) {
         lists.becomesFinal.push({ ...summarize(task), basis: sr.finalizedAt ? 'finalizedAt' : 'history (admin edit)', ...editSummary(edits) });
+        const newBand = computeFinalRating(sr.assumedPercent, task);
+        if (newBand !== task.performanceRating) {
+          const late = task.timeStatus?.type === 'late';
+          lists.bandWouldChange.push({
+            code: task.codeNumber,
+            status: task.status,
+            assumedPercent: sr.assumedPercent,
+            currentBand: task.performanceRating ?? null,
+            newBand,
+            late,
+            daysLate: late ? task.timeStatus.days : 0,
+          });
+        }
       } else {
         stillEstimates += 1;
         const assigned = assignByTaskId.get(String(task._id));
@@ -135,6 +154,11 @@ function classify({ tasks, assignRecords = [], activityEvents = [] }) {
       editedThenReplacedByReal: lists.editedThenReplacedByReal.length,
       ambiguous: lists.ambiguous.length,
       activityWithoutHistory: lists.activityWithoutHistory.length,
+      bandWouldChange: lists.bandWouldChange.length,
+      bandChanges: lists.bandWouldChange.reduce((acc, row) => {
+        const change = `${row.currentBand}→${row.newBand}`;
+        return { ...acc, [change]: (acc[change] || 0) + 1 };
+      }, {}),
       // The dashboard's "M میں سے N تخمینی" over all tasks, before and after the deploy.
       estimatedRatingsShownBefore: syntheticRatedBefore,
       estimatedRatingsShownAfter: syntheticRatedAfter,
