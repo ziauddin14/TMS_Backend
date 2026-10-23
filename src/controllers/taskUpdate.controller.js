@@ -33,11 +33,17 @@ const listUpdates = asyncHandler(async (req, res) => {
 
 // POST /tasks/:id/updates
 const createUpdate = asyncHandler(async (req, res) => {
-  const { update, task } = await taskUpdateService.createUpdate(req.user, req.params.id, req.body);
-  // Activity log: the percent and whether a file came with it — never the description.
+  const { update, task, reopened } = await taskUpdateService.createUpdate(req.user, req.params.id, req.body);
+  // Activity log: the percent and whether a file came with it — never the description — and
+  // `reopened: true` when this update reopened a completed task.
   activityService.record(req, ACTIVITY_TYPES.TASK_UPDATE_CREATED, {
     taskId: task._id,
-    metadata: { taskCode: task.codeNumber, completionPercent: update.completionPercent, hasAttachment: Boolean(update.attachment?.url) },
+    metadata: {
+      taskCode: task.codeNumber,
+      completionPercent: update.completionPercent,
+      hasAttachment: Boolean(update.attachment?.url),
+      ...(reopened ? { reopened: true } : {}),
+    },
   });
   sendSuccess(res, {
     // Same task representation as GET /tasks/:id (docs/05-apis.md §6 step 3) — the one shared

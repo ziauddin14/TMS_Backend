@@ -342,6 +342,9 @@ module.exports = {
   acknowledge,
   runReceiptReminders,
   receiptStatesForNotifications,
+  // The "<code> — <title>، آخری تاریخ <dd-MM-yy>۔" line, shared with the reopened-task notice
+  // (taskUpdate.service.js) so the two can never word a task differently.
+  taskLine,
   // exported for tests
   dueLevel,
   assignmentMessage,

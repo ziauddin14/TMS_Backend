@@ -74,9 +74,16 @@ function downgradeOneLevel(rating) {
   return PERFORMANCE_ORDER[Math.min(idx + 1, PERFORMANCE_ORDER.length - 1)];
 }
 
+// The date a complete or closed task is judged early/late against: when it was completed
+// (completedAt — models/Task.js), else, for a task completed before that field existed, an
+// imported task or one closed short of 100%, the fallback chain used before it.
+function completionReferenceDate(task) {
+  return task.completedAt ?? task.lastUpdateAt ?? task.closedAt ?? task.updatedAt;
+}
+
 // Pure functions, no DB access (docs/06-backend.md §4.4, docs/02-db-design.md §7 — corrected
 // versions: closeTask DOES recompute both fields, and the closed/complete reference date falls
-// back through lastUpdateAt ?? closedAt ?? updatedAt).
+// back through completedAt ?? lastUpdateAt ?? closedAt ?? updatedAt).
 function computeTimeStatus(task, now = new Date()) {
   if (task.status === 'ongoing' || task.status === 'pending') {
     const diffDays = daysBetween(task.deadline, now);
@@ -85,13 +92,25 @@ function computeTimeStatus(task, now = new Date()) {
       : { type: 'overdue', days: Math.abs(diffDays) };
   }
   if (task.status === 'complete' || task.status === 'closed') {
-    const referenceDate = task.lastUpdateAt ?? task.closedAt ?? task.updatedAt;
+    const referenceDate = completionReferenceDate(task);
     const diffDays = daysBetween(task.deadline, referenceDate);
     return diffDays >= 0
       ? { type: 'early', days: diffDays }
       : { type: 'late', days: Math.abs(diffDays) };
   }
   return { type: 'remaining', days: 0 };
+}
+
+// The reminder engine's rule (reminder-engine.service.js maintainTaskState): an ongoing task whose
+// deadline has passed is pending. Also applied the moment an update reopens a completed task, so a
+// reopened task that is already overdue is pending at once rather than at the next engine run.
+// Reads task.timeStatus as already computed; returns whether the status changed.
+function applyOverdueRule(task) {
+  if (task.timeStatus?.type === 'overdue' && task.status === 'ongoing') {
+    task.status = 'pending';
+    return true;
+  }
+  return false;
 }
 
 // The percentage thresholds alone — no status rule, no late downgrade. The one definition of them:
@@ -138,9 +157,11 @@ function computeFinalRating(percent, task) {
 //   moment (computeFinalRating) — so a task completed late drops one level, exactly like a real
 //   rating. If that changes the band, a history entry by 'system' records it (a string author is
 //   never counted as an admin edit). Status, timeStatus, closedAt and completionPercent change as
-//   normal.
+//   normal. When an update below 100% REOPENS the task, the band goes back to the plain band of P
+//   (no downgrade while a task is open), recorded the same way.
 //
-// A task with no synthetic rating (or one already retired) gets the formula's value, as always.
+// A task with no synthetic rating (or one already retired) gets the formula's value, as always —
+// so reopening a task gives it '-' again: a completed rating no longer applies.
 function applyComputedRating(task, { actorId, note, now = new Date() }) {
   const realRating = computePerformanceRating(task.completionPercent, task.timeStatus, task.status);
 
@@ -148,11 +169,11 @@ function applyComputedRating(task, { actorId, note, now = new Date() }) {
     task.performanceRating = realRating;
     return;
   }
-  if (realRating === '-') return;
   if (isFinalRating(task.syntheticRating)) {
     const percent = task.syntheticRating.assumedPercent;
     const band = computeFinalRating(percent, task);
     if (band !== task.performanceRating) {
+      const event = { closed: 'closed', complete: 'completed' }[task.status] || 'reopened';
       task.syntheticRating.history.push({
         at: now,
         by: 'system',
@@ -160,12 +181,13 @@ function applyComputedRating(task, { actorId, note, now = new Date() }) {
         toPercent: percent,
         fromRating: task.performanceRating,
         toRating: band,
-        note: `${FINAL_BAND_NOTE} — task ${task.status === 'closed' ? 'closed' : 'completed'}`,
+        note: `${FINAL_BAND_NOTE} — task ${event}`,
       });
       task.performanceRating = band;
     }
     return;
   }
+  if (realRating === '-') return;
 
   task.syntheticRating.history.push({
     at: now,
@@ -583,14 +605,43 @@ async function removeSyntheticRating(adminUser, taskId, { note } = {}) {
 // an optional { session } so the save participates in the caller's transaction, and an optional
 // { actorId } (who posted the update) for the history entry written if this update is the one that
 // replaces a synthetic rating with a real one — see applyComputedRating.
+//
+// Completion and reopening (any role that may post an update):
+// - An update at 100% or more takes an open task to complete and stamps completedAt — from then on
+//   the date its lateness is measured from. A repeat 100% on a task already complete at 100% (a
+//   comment) leaves completedAt as it is; a task completed before completedAt existed gets its
+//   current reference date stamped instead, so its early/late result does not move either.
+// - An update below 100% on a complete task REOPENS it: completedAt is cleared and the status
+//   becomes ongoing — pending if its deadline has already passed (applyOverdueRule, the engine's
+//   rule). The real rating goes back to '-'; an estimate stays; a final rating keeps its percent
+//   and goes back to the plain band (applyComputedRating). task.$locals.reopened tells the caller
+//   (taskUpdate.service.js), which notifies the assignees once the transaction has committed.
+// A closed task never gets here (createUpdate rejects it).
 async function applyNewUpdateToTask(task, updatePayload, { session, actorId } = {}) {
-  task.completionPercent = updatePayload.completionPercent;
-  task.lastUpdateAt = new Date();
-  if (task.completionPercent >= 100 && task.status !== 'closed') {
+  const now = new Date();
+  const percent = updatePayload.completionPercent;
+  const wasComplete = task.status === 'complete';
+  let reopened = false;
+
+  if (percent >= 100) {
+    if (wasComplete && task.completionPercent >= 100) {
+      if (!task.completedAt) task.completedAt = completionReferenceDate(task);
+    } else {
+      task.completedAt = now;
+    }
     task.status = 'complete';
+  } else if (wasComplete) {
+    task.completedAt = undefined;
+    task.status = 'ongoing';
+    reopened = true;
   }
-  task.timeStatus = computeTimeStatus(task);
-  applyComputedRating(task, { actorId, note: 'synthetic rating replaced by the real rating — task completed' });
+
+  task.completionPercent = percent;
+  task.lastUpdateAt = now;
+  task.timeStatus = computeTimeStatus(task, now);
+  if (reopened) applyOverdueRule(task);
+  applyComputedRating(task, { actorId, now, note: 'synthetic rating replaced by the real rating — task completed' });
+  task.$locals.reopened = reopened;
   await task.save({ session });
   return task;
 }
@@ -602,6 +653,8 @@ module.exports = {
   updateTaskFields,
   closeTask,
   computeTimeStatus,
+  completionReferenceDate,
+  applyOverdueRule,
   computePerformanceRating,
   computeFinalRating,
   ratingForPercent,

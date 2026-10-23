@@ -21,6 +21,9 @@ const NOTIFICATION_TYPES = Object.freeze({
   // them — they confirm it with "وصول کر لیا" — and the reminders sent while they have not.
   TASK_ASSIGNED: 'TASK_ASSIGNED',
   TASK_RECEIPT_REMINDER: 'TASK_RECEIPT_REMINDER',
+  // A completed task was reopened by an update below 100% — the notice to its other assignees
+  // (services/taskUpdate.service.js).
+  TASK_REOPENED: 'TASK_REOPENED',
 });
 
 // Unlike `type`, `source` is a small, genuinely closed set intrinsic to the architecture itself

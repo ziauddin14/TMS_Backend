@@ -1,8 +1,54 @@
 const mongoose = require('mongoose');
 const Task = require('../models/Task');
 const TaskUpdate = require('../models/TaskUpdate');
+const User = require('../models/User');
 const AppError = require('../utils/AppError');
+const { NOTIFICATION_TYPES } = require('../utils/notificationTypes');
+const logger = require('../utils/logger');
 const taskService = require('./task.service');
+const notificationService = require('./notification.service');
+const { taskLine } = require('./receipt.service');
+
+// The approved wording of the notice that a completed task was reopened.
+const REOPENED_TITLE = 'کام دوبارہ کھول دیا گیا';
+
+function reopenedMessage(actorName, task) {
+  return `${actorName} نے یہ کام دوبارہ کھول دیا ہے: ${taskLine(task)}`;
+}
+
+// An update below 100% reopened a completed task (task.service.js applyNewUpdateToTask): one notice
+// (in-app + push, through the one notification-creation path) to each active assignee except the
+// person who reopened it. Called once the update's transaction has committed; a failure is logged
+// and never undoes or fails the update. Returns how many notices were sent.
+async function notifyReopened(task, actor) {
+  let sent = 0;
+  try {
+    const ids = [...new Set(task.assignees.map((assignee) => String(assignee._id || assignee)))].filter((id) => id !== String(actor.id));
+    if (ids.length === 0) return 0;
+    const active = new Set((await User.find({ _id: { $in: ids }, isActive: true }).select('_id')).map((user) => user.id));
+    for (const id of ids.filter((candidate) => active.has(candidate))) {
+      try {
+        // eslint-disable-next-line no-await-in-loop -- sequential, like every other fan-out here
+        await notificationService.createNotification({
+          recipientUserId: id,
+          type: NOTIFICATION_TYPES.TASK_REOPENED,
+          title: REOPENED_TITLE,
+          message: reopenedMessage(actor.name, task),
+          taskId: task._id,
+          createdBy: actor.id,
+          source: actor.role === 'admin' ? 'admin' : 'system',
+          metadata: { taskCodeNumber: task.codeNumber },
+        });
+        sent += 1;
+      } catch (err) {
+        logger.error(`Task reopened: notice for task ${task._id} to ${id} failed:`, err.message || err);
+      }
+    }
+  } catch (err) {
+    logger.error(`Task reopened: notices for task ${task._id} failed:`, err.message || err);
+  }
+  return sent;
+}
 
 /**
  * Mirrors task.service.js's getTaskById ownership rule exactly (Admin, or assignee-membership;
@@ -48,6 +94,7 @@ async function createUpdate(requestingUser, taskId, { description, completionPer
 
   const session = await mongoose.startSession();
   let createdUpdateId;
+  let reopened = false;
 
   try {
     await session.withTransaction(async () => {
@@ -79,6 +126,7 @@ async function createUpdate(requestingUser, taskId, { description, completionPer
       createdUpdateId = created._id;
 
       await taskService.applyNewUpdateToTask(task, { completionPercent }, { session, actorId: requestingUser.id });
+      reopened = Boolean(task.$locals.reopened);
     });
   } finally {
     await session.endSession();
@@ -90,7 +138,9 @@ async function createUpdate(requestingUser, taskId, { description, completionPer
     Task.findById(taskId).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate({ path: 'receipts.user', select: 'name' }),
   ]);
 
-  return { update: populatedUpdate, task: populatedTask };
+  if (reopened) await notifyReopened(populatedTask, requestingUser);
+
+  return { update: populatedUpdate, task: populatedTask, reopened };
 }
 
-module.exports = { listUpdates, createUpdate };
+module.exports = { listUpdates, createUpdate, REOPENED_TITLE, reopenedMessage };

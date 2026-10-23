@@ -105,11 +105,7 @@ async function maintainTaskState(task, now) {
 
   task.timeStatus = newTimeStatus;
 
-  let statusChanged = false;
-  if (newTimeStatus.type === 'overdue' && task.status === 'ongoing') {
-    task.status = 'pending';
-    statusChanged = true;
-  }
+  const statusChanged = taskService.applyOverdueRule(task);
 
   if (timeStatusChanged || statusChanged) {
     await task.save();

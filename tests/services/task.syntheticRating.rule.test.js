@@ -183,7 +183,10 @@ describe('a REAL rating replaces the synthetic one', () => {
     await taskUpdateService.createUpdate(actor, task.id, { description: 'تصحیح', completionPercent: 75 });
 
     const after = await reload(task);
-    expect(after.performanceRating).toBe('fair'); // real formula on the real 75%
+    // 75% on a complete task reopens it: open again, so the real formula gives '-' — a completed
+    // rating no longer applies (it used to stay "complete" and read "fair").
+    expect(after.status).toBe('ongoing');
+    expect(after.performanceRating).toBe('-');
     expect(after.syntheticRating.isSynthetic).toBe(false);
     expect(after.syntheticRating.history).toHaveLength(2);
   });
