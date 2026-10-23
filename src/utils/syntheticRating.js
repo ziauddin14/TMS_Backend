@@ -6,14 +6,17 @@
 //   - still an ESTIMATE — as the script assigned it, never edited by an admin; or
 //   - FINAL — an admin changed it. From then on it is no longer an estimate: it is shown and
 //     counted as a real rating, it can no longer be changed or removed, and a real rating computed
-//     later does not replace it. The stored flag stays true (so its assumed percent keeps being the
+//     later does not replace it. Its percent P (the percent the admin entered) never changes; its
+//     BAND is computed like a real rating's with P — one level down when the task was completed
+//     late (task.service.js computeFinalRating). The stored flag stays true (so P keeps being the
 //     task's effective percent — Task.getEffectivePercent), and nothing is migrated.
 //
 // Final means: `finalizedAt` is set (written by every admin edit from this change on), OR — for the
 // edits made before this change — the history holds an admin edit: an entry whose `by` is an
-// ObjectId (an admin's id; the scripts only ever write the string 'system:script') and whose
-// `toPercent` is a number (a removal writes null). The real-rating replacement also writes such an
-// entry, but it switches isSynthetic off at the same time, so it never counts here.
+// ObjectId (an admin's id; the app and the scripts otherwise only write the strings 'system' and
+// 'system:script') and whose `toPercent` is a number (a removal writes null). The real-rating
+// replacement also writes such an entry, but it switches isSynthetic off at the same time, so it
+// never counts here.
 const ADMIN_EDIT_MATCH = { by: { $type: 'objectId' }, toPercent: { $type: 'number' } };
 
 // HistoricalImportRecord ledger actions: the script's assignment (scripts/synthetic-ratings/), and

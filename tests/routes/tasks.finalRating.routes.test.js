@@ -98,14 +98,14 @@ describe('PATCH — an admin edit makes the rating FINAL', () => {
     const res = await request(app).patch(url(closedEstimate)).set(auth(admin)).send({ assumedPercent: 95, note: 'جائزہ مکمل' });
 
     expect(res.status).toBe(200);
-    expect(res.body.data.performanceRating).toBe('excellent'); // 95%, no late downgrade
+    expect(res.body.data.performanceRating).toBe('good'); // 95% = excellent, one level down: completed late
     expect(res.body.data.syntheticRating).toMatchObject({ isSynthetic: false, isFinal: true, assumedPercent: 95 });
     const stored = await lean(closedEstimate);
     expect(stored.syntheticRating).toMatchObject({ isSynthetic: true, assumedPercent: 95 }); // still synthetic in the store
     expect(String(stored.syntheticRating.finalizedBy)).toBe(admin.id);
     expect(stored.syntheticRating.finalizedAt.getTime()).toBeGreaterThanOrEqual(startedAt);
     const last = stored.syntheticRating.history.at(-1);
-    expect(last).toMatchObject({ fromPercent: 80, toPercent: 95, fromRating: 'good', toRating: 'excellent', note: 'جائزہ مکمل' });
+    expect(last).toMatchObject({ fromPercent: 80, toPercent: 95, fromRating: 'good', toRating: 'good', note: 'جائزہ مکمل' });
     expect(String(last.by)).toBe(admin.id);
     expect(last.at.getTime()).toBe(stored.syntheticRating.finalizedAt.getTime());
     // Real fields untouched.
@@ -123,7 +123,7 @@ describe('PATCH — an admin edit makes the rating FINAL', () => {
       sourceKey: 'synthetic-rating-finalized:250126',
       personKey: 'alpha', // carried over from the task's assignment record
       previous: { performanceRating: 'good', assumedPercent: 80, isSynthetic: true },
-      next: { performanceRating: 'excellent', assumedPercent: 92, note: 'وجہ' },
+      next: { performanceRating: 'good', assumedPercent: 92, note: 'وجہ' }, // 92% late: one level down
     });
     expect(String(record.targetId)).toBe(closedEstimate.id);
     expect(String(record.next.finalizedBy)).toBe(admin.id);
@@ -225,31 +225,36 @@ describe('a final rating is never replaced by a real one', () => {
     expect(res.body.data.task).toMatchObject({ performanceRating: 'good', completionPercent: 30, syntheticRating: { isFinal: true } });
   });
 
-  it('closing the task: status, timeStatus and closedAt change as normal — the rating and the effective percent do not', async () => {
+  it('closing the task: status, timeStatus and closedAt change as normal; the percent stays — only lateness moves the band', async () => {
     const { admin, pendingEstimate } = await seed();
-    await request(app).patch(url(pendingEstimate)).set(auth(admin)).send({ assumedPercent: 92 });
+    // Open (pending): no late downgrade while it is open — 92% is excellent.
+    const finalized = await request(app).patch(url(pendingEstimate)).set(auth(admin)).send({ assumedPercent: 92 });
+    expect(finalized.body.data.performanceRating).toBe('excellent');
 
     const res = await request(app).patch(`/api/v1/tasks/${pendingEstimate.id}/close`).set(auth(admin));
 
     expect(res.status).toBe(200);
     const stored = await lean(pendingEstimate);
-    expect(stored).toMatchObject({ status: 'closed', performanceRating: 'excellent', completionPercent: 25 });
+    // Closed late: the band is computed again from the same 92% — one level down. The real
+    // formula (25%, late) would have said "weak" — it was not applied.
+    expect(stored).toMatchObject({ status: 'closed', performanceRating: 'good', completionPercent: 25 });
     expect(stored.closedAt).toBeInstanceOf(Date);
     expect(stored.timeStatus.type).toBe('late');
     expect(stored.syntheticRating).toMatchObject({ isSynthetic: true, assumedPercent: 92 });
     expect(Task.getEffectivePercent(stored)).toBe(92);
-    // The real formula (25%, late) would have said "weak" — it was not applied.
-    expect(stored.syntheticRating.history.at(-1).toPercent).toBe(92);
+    // The band change is recorded by 'system' — not an admin edit — and the task stays final.
+    expect(stored.syntheticRating.history.at(-1)).toMatchObject({ by: 'system', fromPercent: 92, toPercent: 92, fromRating: 'excellent', toRating: 'good' });
+    expect(res.body.data.syntheticRating).toMatchObject({ isFinal: true, isSynthetic: false });
   });
 
-  it('an update to 100% completes the task and still keeps the final rating', async () => {
+  it('an update to 100% completes the task late: the same percent, one level down', async () => {
     const { admin, assignee, pendingEstimate } = await seed();
     await request(app).patch(url(pendingEstimate)).set(auth(admin)).send({ assumedPercent: 72 });
 
     await request(app).post(`/api/v1/tasks/${pendingEstimate.id}/updates`).set(auth(assignee)).send({ description: 'مکمل', completionPercent: 100 });
 
     const stored = await lean(pendingEstimate);
-    expect(stored).toMatchObject({ status: 'complete', completionPercent: 100, performanceRating: 'fair' });
+    expect(stored).toMatchObject({ status: 'complete', completionPercent: 100, performanceRating: 'weak' }); // 72% = fair, late
     expect(Task.getEffectivePercent(stored)).toBe(72);
   });
 
@@ -299,6 +304,8 @@ describe('consumers — a final rating counts as a real one', () => {
 
     const rows = await reportService.buildUserSummaryData({ id: admin.id, role: 'admin' });
 
-    expect(rows.find((r) => r.name === 'Zimmedar')).toMatchObject({ excellent: 2, weak: 2, synthetic: 1, total: 4 });
+    // 250126 finalized at 95% on a task completed late: good. The legacy final (250103) keeps its
+    // stored excellent until the data-fix script corrects it.
+    expect(rows.find((r) => r.name === 'Zimmedar')).toMatchObject({ excellent: 1, good: 1, weak: 2, synthetic: 1, total: 4 });
   });
 });

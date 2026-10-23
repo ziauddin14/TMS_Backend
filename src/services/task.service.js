@@ -20,6 +20,8 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 // receipts (task.serializer.js shows them to admins). A task without receipts is unaffected.
 const RECEIPT_USERS = { path: 'receipts.user', select: 'name' };
 const PERFORMANCE_ORDER = ['excellent', 'good', 'fair', 'weak'];
+// The history note when a final rating's band is computed again with the late rule.
+const FINAL_BAND_NOTE = 'final rating band recomputed with the late rule';
 const KARACHI_TIME_ZONE = 'Asia/Karachi';
 
 // Phase 9's original `date.setHours(0, 0, 0, 0)` anchored the business day to the HOST PROCESS's
@@ -106,6 +108,19 @@ function computePerformanceRating(completionPercent, timeStatus, status) {
   return rating;
 }
 
+// The band of a FINAL synthetic rating (an admin's edit — utils/syntheticRating.js), whose percent
+// P is the percent the admin entered. It is computed exactly like a real rating with P as the
+// completion percent — the same thresholds, and ONE level down when the task was completed late —
+// once the task is completed (closed, or complete at 100%), with the task's stored timeStatus.
+// While the task is still OPEN it has not been completed late (or on time) yet, so the band is the
+// plain one of P; it is computed again when the task closes or completes (applyComputedRating).
+// A rating that is still only an ESTIMATE never comes here: its band stays ratingForPercent, with
+// no late downgrade.
+function computeFinalRating(percent, task) {
+  if (['complete', 'closed'].includes(task.status)) return computePerformanceRating(percent, task.timeStatus || {}, task.status);
+  return ratingForPercent(percent);
+}
+
 // Sets task.performanceRating from the real formula — the one place closeTask and
 // applyNewUpdateToTask do it — with one rule on top for a task that carries a developer-assigned
 // (synthetic) rating (models/Task.js syntheticRating):
@@ -117,9 +132,13 @@ function computePerformanceRating(completionPercent, timeStatus, status) {
 //   complete), that real rating replaces the synthetic one: performanceRating is overwritten,
 //   syntheticRating.isSynthetic becomes false, and the replacement is recorded in its history.
 //   The rest of syntheticRating is kept as the record of what was once assumed.
-// - A FINAL synthetic rating (an admin changed it — utils/syntheticRating.js) is never replaced:
-//   the admin's decision stands, whatever the formula would give. Status, timeStatus, closedAt and
-//   completionPercent still change as normal; only the rating (and so the effective percent) stays.
+// - A FINAL synthetic rating (an admin changed it — utils/syntheticRating.js) is never replaced by
+//   the real rating, and its percent P (the effective percent) never changes. When the task is
+//   closed or completed, only its BAND is computed again from P and the task's lateness at that
+//   moment (computeFinalRating) — so a task completed late drops one level, exactly like a real
+//   rating. If that changes the band, a history entry by 'system' records it (a string author is
+//   never counted as an admin edit). Status, timeStatus, closedAt and completionPercent change as
+//   normal.
 //
 // A task with no synthetic rating (or one already retired) gets the formula's value, as always.
 function applyComputedRating(task, { actorId, note, now = new Date() }) {
@@ -130,7 +149,23 @@ function applyComputedRating(task, { actorId, note, now = new Date() }) {
     return;
   }
   if (realRating === '-') return;
-  if (isFinalRating(task.syntheticRating)) return;
+  if (isFinalRating(task.syntheticRating)) {
+    const percent = task.syntheticRating.assumedPercent;
+    const band = computeFinalRating(percent, task);
+    if (band !== task.performanceRating) {
+      task.syntheticRating.history.push({
+        at: now,
+        by: 'system',
+        fromPercent: percent,
+        toPercent: percent,
+        fromRating: task.performanceRating,
+        toRating: band,
+        note: `${FINAL_BAND_NOTE} — task ${task.status === 'closed' ? 'closed' : 'completed'}`,
+      });
+      task.performanceRating = band;
+    }
+    return;
+  }
 
   task.syntheticRating.history.push({
     at: now,
@@ -479,12 +514,13 @@ async function writeSyntheticRatingChange(task, adminUser, { set, historyEntry, 
   return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate(RECEIPT_USERS);
 }
 
-// PATCH /tasks/:id/synthetic-rating — a new percentage, and the rating becomes FINAL. The rating is
-// the plain threshold rating of that percentage (ratingForPercent): no late downgrade, exactly as
-// when it was assigned, so the band saved is the band the admin saw.
+// PATCH /tasks/:id/synthetic-rating — a new percentage, and the rating becomes FINAL. Its band is
+// computed like a real rating with that percentage (computeFinalRating): one level down when the
+// task was completed late; the plain band while the task is still open. The dialog previews the
+// same band, so the band saved is the band the admin saw.
 async function editSyntheticRating(adminUser, taskId, { assumedPercent, note }) {
   const task = await findTaskWithEstimate(taskId);
-  const toRating = ratingForPercent(assumedPercent);
+  const toRating = computeFinalRating(assumedPercent, task);
   const now = new Date();
   const adminId = new mongoose.Types.ObjectId(adminUser.id);
   const assignment = await HistoricalImportRecord.findOne({ targetId: task._id, action: ASSIGN_LEDGER_ACTION }).select('personKey').lean();
@@ -567,7 +603,9 @@ module.exports = {
   closeTask,
   computeTimeStatus,
   computePerformanceRating,
+  computeFinalRating,
   ratingForPercent,
+  FINAL_BAND_NOTE,
   applyNewUpdateToTask,
   editSyntheticRating,
   removeSyntheticRating,
