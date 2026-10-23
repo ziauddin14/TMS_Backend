@@ -107,6 +107,31 @@ describe('finalized-estimates classifier', () => {
     expect(lists.activityWithoutHistory.find((row) => row.code === '259999').why).toMatch(/no longer carries a synthetic rating/);
   });
 
+  it('list 6 — final ratings whose band would change under the late rule, with a count per change', () => {
+    const late = { type: 'late', days: 117 };
+    const lateFinal90 = task('250218', { performanceRating: 'excellent', assumedPercent: 90, history: [scriptEntry(80, 'good'), edit(80, 90)] });
+    lateFinal90.timeStatus = late;
+    const lateFinal80 = task('250219', { assumedPercent: 80, history: [scriptEntry(80, 'good'), edit(90, 80)] });
+    lateFinal80.timeStatus = late;
+    const lateFinal60 = task('250220', { performanceRating: 'weak', assumedPercent: 60, history: [scriptEntry(80, 'good'), edit(80, 60)] }); // weak stays weak
+    lateFinal60.timeStatus = late;
+    const onTimeFinal = task('250221', { performanceRating: 'excellent', assumedPercent: 90, history: [scriptEntry(80, 'good'), edit(80, 90)] });
+    onTimeFinal.timeStatus = { type: 'early', days: 0 };
+    const openOverdueFinal = task('250222', { status: 'pending', performanceRating: 'excellent', assumedPercent: 90, history: [scriptEntry(40, 'weak'), edit(40, 90)] });
+    openOverdueFinal.timeStatus = { type: 'overdue', days: 30 };
+    const lateEstimate = task('250223', {}); // still an estimate: never in this list
+    lateEstimate.timeStatus = late;
+    const all = [lateFinal90, lateFinal80, lateFinal60, onTimeFinal, openOverdueFinal, lateEstimate];
+
+    const { lists, totals } = classify({ tasks: all, assignRecords: all.map((t) => assigned(t)) });
+
+    expect(lists.bandWouldChange).toEqual([
+      { code: '250218', status: 'closed', assumedPercent: 90, currentBand: 'excellent', newBand: 'good', late: true, daysLate: 117 },
+      { code: '250219', status: 'closed', assumedPercent: 80, currentBand: 'good', newBand: 'fair', late: true, daysLate: 117 },
+    ]);
+    expect(totals).toMatchObject({ bandWouldChange: 2, bandChanges: { 'excellent→good': 1, 'good→fair': 1 } });
+  });
+
   it('ignores tasks without a synthetic rating and never mutates its input', () => {
     const plain = { _id: new mongoose.Types.ObjectId(), codeNumber: '250216', status: 'closed', completionPercent: 50, performanceRating: 'weak' };
     const t = task('250217', { history: [scriptEntry(80, 'good'), edit(80, 95)] });

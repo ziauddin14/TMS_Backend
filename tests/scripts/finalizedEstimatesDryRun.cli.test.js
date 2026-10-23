@@ -54,6 +54,7 @@ describe('scripts/finalized-estimates-dry-run.js', () => {
       base('250301', { syntheticRating: { isSynthetic: true, assumedPercent: 80, assignedAt: at, assignedBy: 'system:script', history: [script] } }),
       base('250302', {
         performanceRating: 'excellent',
+        timeStatus: { type: 'late', days: 117 }, // completed late: under the late rule it would be good
         syntheticRating: { isSynthetic: true, assumedPercent: 95, assignedAt: at, assignedBy: 'system:script', history: [script, { at: new Date('2026-10-12T00:00:00.000Z'), by: admin, fromPercent: 80, toPercent: 95, fromRating: 'good', toRating: 'excellent', note: null }] },
       }),
       base('250303', { performanceRating: 'weak' }),
@@ -71,6 +72,8 @@ describe('scripts/finalized-estimates-dry-run.js', () => {
     expect(stdout).toContain('read only, nothing was written');
     expect(stdout).toMatch(/1\. Becomes FINAL[^\n]*— 1\n\s+250302 /);
     expect(stdout).toContain('Dashboard "تخمینی" count over all tasks: 2 now → 1 after the deploy');
+    expect(stdout).toMatch(/6\. Final ratings whose band would change[^\n]*— 1\n\s+250302 {2}status=closed {2}assumedPercent=95 {2}currentBand=excellent {2}newBand=good {2}late=true {2}daysLate=117/);
+    expect(stdout).toContain('Band changes under the late rule (from → to): excellent→good: 1');
     expect(stdout).not.toContain('mongodb://');
     expect(stdout).not.toContain(uri.split('/')[2]); // host:port
     expect(await stateOfDatabase()).toEqual(before);
