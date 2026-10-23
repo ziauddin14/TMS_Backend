@@ -16,7 +16,10 @@ const historicalImportRecordSchema = new Schema(
     sourceKey: { type: String, required: true, unique: true },
     // 'syntheticRating' (added for scripts/assign-synthetic-ratings.js): a change made to an
     // existing imported Task, rather than a document the import created — see `action` below.
-    kind: { type: String, enum: ['task', 'taskUpdate', 'syntheticRating'], required: true },
+    // 'taskRepair' (scripts/reopen-stuck-complete.js): a repair of an existing task's status. Not
+    // 'task': the import and the synthetic-ratings scripts read every 'task' record as an
+    // imported task.
+    kind: { type: String, enum: ['task', 'taskUpdate', 'syntheticRating', 'taskRepair'], required: true },
     targetId: { type: Schema.Types.ObjectId, required: true },
     taskCode: { type: String, required: true },
     personKey: { type: String, required: true },
