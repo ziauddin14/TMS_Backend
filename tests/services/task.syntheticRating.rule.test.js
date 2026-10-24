@@ -180,7 +180,8 @@ describe('a REAL rating replaces the synthetic one', () => {
     const actor = { id: users.assignee.id, role: 'user' };
     await taskUpdateService.createUpdate(actor, task.id, { description: 'مکمل', completionPercent: 100 });
 
-    await taskUpdateService.createUpdate(actor, task.id, { description: 'تصحیح', completionPercent: 75 });
+    // Only an admin may reopen a complete task (an update below 100%).
+    await taskUpdateService.createUpdate({ id: users.admin.id, role: 'admin', name: users.admin.name }, task.id, { description: 'تصحیح', completionPercent: 75 });
 
     const after = await reload(task);
     // 75% on a complete task reopens it: open again, so the real formula gives '-' — a completed
