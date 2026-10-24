@@ -606,12 +606,14 @@ async function removeSyntheticRating(adminUser, taskId, { note } = {}) {
 // { actorId } (who posted the update) for the history entry written if this update is the one that
 // replaces a synthetic rating with a real one — see applyComputedRating.
 //
-// Completion and reopening (any role that may post an update):
-// - An update at 100% or more takes an open task to complete and stamps completedAt — from then on
-//   the date its lateness is measured from. A repeat 100% on a task already complete at 100% (a
-//   comment) leaves completedAt as it is; a task completed before completedAt existed gets its
-//   current reference date stamped instead, so its early/late result does not move either.
-// - An update below 100% on a complete task REOPENS it: completedAt is cleared and the status
+// Completion and reopening:
+// - An update at 100% or more (from anyone who may post one) takes an open task to complete and
+//   stamps completedAt — from then on the date its lateness is measured from. A repeat 100% on a
+//   task already complete at 100% (a comment) leaves completedAt as it is; a task completed before
+//   completedAt existed gets its current reference date stamped instead, so its early/late result
+//   does not move either.
+// - An ADMIN's update below 100% on a complete task REOPENS it — createUpdate refuses one from
+//   anyone else (403 REOPEN_ADMIN_ONLY) before this is called: completedAt is cleared and the status
 //   becomes ongoing — pending if its deadline has already passed (applyOverdueRule, the engine's
 //   rule). The real rating goes back to '-'; an estimate stays; a final rating keeps its percent
 //   and goes back to the plain band (applyComputedRating). task.$locals.reopened tells the caller

@@ -11,15 +11,18 @@ const { taskLine } = require('./receipt.service');
 
 // The approved wording of the notice that a completed task was reopened.
 const REOPENED_TITLE = 'کام دوبارہ کھول دیا گیا';
+// The approved wording of the refusal when someone other than an admin posts below 100% on a
+// complete task: only an admin may reopen one (the frontend shows the same sentence in the form).
+const REOPEN_ADMIN_ONLY_MESSAGE = 'مکمل کام میں 100 سے کم فیصد صرف ایڈمن درج کر سکتا ہے۔';
 
 function reopenedMessage(actorName, task) {
   return `${actorName} نے یہ کام دوبارہ کھول دیا ہے: ${taskLine(task)}`;
 }
 
-// An update below 100% reopened a completed task (task.service.js applyNewUpdateToTask): one notice
-// (in-app + push, through the one notification-creation path) to each active assignee except the
-// person who reopened it. Called once the update's transaction has committed; a failure is logged
-// and never undoes or fails the update. Returns how many notices were sent.
+// An admin's update below 100% reopened a completed task (task.service.js applyNewUpdateToTask): one
+// notice (in-app + push, through the one notification-creation path) to each active assignee except
+// the admin who reopened it. Called once the update's transaction has committed; a failure is
+// logged and never undoes or fails the update. Returns how many notices were sent.
 async function notifyReopened(task, actor) {
   let sent = 0;
   try {
@@ -36,7 +39,7 @@ async function notifyReopened(task, actor) {
           message: reopenedMessage(actor.name, task),
           taskId: task._id,
           createdBy: actor.id,
-          source: actor.role === 'admin' ? 'admin' : 'system',
+          source: 'admin', // only an admin can reopen a task (createUpdate)
           metadata: { taskCodeNumber: task.codeNumber },
         });
         sent += 1;
@@ -111,6 +114,13 @@ async function createUpdate(requestingUser, taskId, { description, completionPer
         throw new AppError('Yeh kaam close ho chuka hai', 400, 'VALIDATION_ERROR');
       }
 
+      // Only an admin may reopen a complete task (an update below 100%). Anyone else is refused
+      // here, before anything is written: no update, no notice, no activity entry, the task as it
+      // was. An update at 100% or more (a comment on a complete task) is allowed for everyone.
+      if (task.status === 'complete' && completionPercent < 100 && requestingUser.role !== 'admin') {
+        throw new AppError(REOPEN_ADMIN_ONLY_MESSAGE, 403, 'REOPEN_ADMIN_ONLY');
+      }
+
       const [created] = await TaskUpdate.create(
         [
           {
@@ -143,4 +153,4 @@ async function createUpdate(requestingUser, taskId, { description, completionPer
   return { update: populatedUpdate, task: populatedTask, reopened };
 }
 
-module.exports = { listUpdates, createUpdate, REOPENED_TITLE, reopenedMessage };
+module.exports = { listUpdates, createUpdate, REOPENED_TITLE, REOPEN_ADMIN_ONLY_MESSAGE, reopenedMessage };

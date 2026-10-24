@@ -6,18 +6,20 @@ const env = require('../../src/config/env');
 const { connect, closeDatabase, clearDatabase } = require('../helpers/db');
 const User = require('../../src/models/User');
 const Task = require('../../src/models/Task');
+const TaskUpdate = require('../../src/models/TaskUpdate');
 const Notification = require('../../src/models/Notification');
 const ActivityEvent = require('../../src/models/ActivityEvent');
 const activityService = require('../../src/services/activity.service');
 const notificationService = require('../../src/services/notification.service');
 const taskService = require('../../src/services/task.service');
-const { REOPENED_TITLE } = require('../../src/services/taskUpdate.service');
+const { REOPENED_TITLE, REOPEN_ADMIN_ONLY_MESSAGE } = require('../../src/services/taskUpdate.service');
 const { formatDateShortKarachi } = require('../../src/utils/formatDate');
 
 // Reopening a completed task, and when a task counts as completed (task.service.js
-// applyNewUpdateToTask, computeTimeStatus): any role that may post an update reopens a complete
-// task with an update below 100%; completedAt is the date lateness is measured from; the other
-// assignees are told; the activity log marks the update. Through the real API.
+// applyNewUpdateToTask, computeTimeStatus): only an admin reopens a complete task, with an update
+// below 100% — anyone else is refused (taskUpdate.service.js createUpdate) but may still post 100%;
+// completedAt is the date lateness is measured from; the other assignees are told; the activity log
+// marks the update. Through the real API.
 beforeAll(async () => connect());
 afterEach(async () => {
   await activityService.flushForTests();
@@ -87,14 +89,40 @@ describe('an update below 100% on a complete task reopens it', () => {
     expect(res.body.data.task).toMatchObject({ status: 'pending', completionPercent: 0, timeStatus: { type: 'overdue', days: 1 }, performanceRating: '-' });
   });
 
-  it('any role may reopen: an assignee posting below 100% reopens the task too', async () => {
+  it('only an admin may reopen: an assignee posting below 100% is refused with 403 and nothing changes', async () => {
     const admin = await makeUser('admin');
     const user = await makeUser();
-    const task = await completeTask(admin, [user]);
+    const other = await makeUser();
+    const task = await completeTask(admin, [user, other]);
+    const before = await reload(task);
 
-    await post(user, task, 60).expect(201);
+    const res = await post(user, task, 60);
 
-    expect(await reload(task)).toMatchObject({ status: 'ongoing', completionPercent: 60, performanceRating: '-' });
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ success: false, code: 'REOPEN_ADMIN_ONLY', message: 'مکمل کام میں 100 سے کم فیصد صرف ایڈمن درج کر سکتا ہے۔' });
+    expect(REOPEN_ADMIN_ONLY_MESSAGE).toBe('مکمل کام میں 100 سے کم فیصد صرف ایڈمن درج کر سکتا ہے۔');
+    // Nothing written: the task byte for byte, no update, no notice, no activity entry.
+    expect(mongoose.mongo.BSON.EJSON.stringify(await reload(task))).toBe(mongoose.mongo.BSON.EJSON.stringify(before));
+    expect(await TaskUpdate.countDocuments({ taskId: task._id })).toBe(0);
+    expect(await reopenedNotices()).toHaveLength(0);
+    await activityService.flushForTests();
+    expect(await ActivityEvent.countDocuments({ type: 'TASK_UPDATE_CREATED' })).toBe(0);
+  });
+
+  it('a non-admin may still post 100% or more on a complete task: saved, the task stays complete, completedAt unchanged', async () => {
+    const admin = await makeUser('admin');
+    const user = await makeUser();
+    const completedAt = daysFromNow(-1);
+    const task = await completeTask(admin, [user], { completedAt });
+
+    const res = await post(user, task, 100, 'تصویر شامل کر دی');
+
+    expect(res.status).toBe(201);
+    const stored = await reload(task);
+    expect(stored).toMatchObject({ status: 'complete', completionPercent: 100, performanceRating: 'excellent' });
+    expect(stored.completedAt.getTime()).toBe(completedAt.getTime());
+    expect(await TaskUpdate.countDocuments({ taskId: task._id })).toBe(1);
+    expect(await reopenedNotices()).toHaveLength(0);
   });
 
   it('a task left "complete" below 100% by the old code is reopened by its next update below 100%', async () => {
@@ -266,17 +294,17 @@ describe('the TASK_REOPENED notice', () => {
     expect(REOPENED_TITLE).toBe('کام دوبارہ کھول دیا گیا');
   });
 
-  it('an assignee reopens: the other assignees are told, the person who reopened it is not', async () => {
+  it('an admin who is also an assignee reopens: the other assignees are told, the admin is not', async () => {
     const admin = await makeUser('admin');
     const a = await makeUser();
     const b = await makeUser();
-    const task = await completeTask(admin, [a, b]);
+    const task = await completeTask(admin, [admin, a, b]);
 
-    await post(a, task, 50).expect(201);
+    await post(admin, task, 50).expect(201);
 
     const notices = await reopenedNotices();
-    expect(notices.map((n) => String(n.recipientUserId))).toEqual([b.id]);
-    expect(notices[0]).toMatchObject({ source: 'system', message: expect.stringMatching(new RegExp(`^${a.name} نے یہ کام دوبارہ کھول دیا ہے: `)) });
+    expect(notices.map((n) => String(n.recipientUserId)).sort()).toEqual([a.id, b.id].sort());
+    notices.forEach((notice) => expect(notice).toMatchObject({ source: 'admin', message: expect.stringMatching(/^حافظ احمد نے یہ کام دوبارہ کھول دیا ہے: /) }));
   });
 
   it('no notice for an ordinary update, a completion, or a repeat 100%', async () => {
