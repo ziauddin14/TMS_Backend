@@ -93,6 +93,15 @@ const taskSchema = new Schema(
     status: { type: String, enum: ['ongoing', 'pending', 'complete', 'closed'], default: 'ongoing' },
     completionPercent: { type: Number, min: 0, max: 100, default: 0 },
     lastUpdateAt: { type: Date, default: null },
+    // When the task was completed: set by the update that takes it to complete (100%), cleared when
+    // an update below 100% reopens it (task.service.js applyNewUpdateToTask). Lateness of a complete
+    // or closed task is measured from it (computeTimeStatus), so a later update — a repeat 100% or a
+    // comment — no longer moves the completion date. Absent on every task completed before it
+    // existed (and on imported tasks): those keep the lastUpdateAt fallback until their next update
+    // at 100%, which stamps their current reference date. No migration. `default: undefined`, like
+    // receipts below: with a default, Mongoose would write the field onto every older task the next
+    // time anything saves it (the reminder engine's daily save, closing a task).
+    completedAt: { type: Date, default: undefined },
     timeStatus: { type: timeStatusSchema, default: () => ({}) },
     performanceRating: {
       type: String,
