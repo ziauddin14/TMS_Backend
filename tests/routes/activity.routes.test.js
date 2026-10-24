@@ -46,9 +46,12 @@ async function makeUser(overrides = {}) {
   return User.create({ name: `User ${n}`, email: `u${n}-${new mongoose.Types.ObjectId()}@x.com`, responsibility: 'R', role: 'user', ...overrides });
 }
 const makeAdmin = () => makeUser({ role: 'admin', name: 'Admin' });
+// Oldest first, in the order they were recorded: one request can record two events in the same
+// millisecond (a PATCH that renames and deactivates a user), so `at` alone leaves their order to
+// chance; the ObjectId, generated in this process in call order, breaks the tie.
 async function events(type) {
   await activityService.flushForTests();
-  return ActivityEvent.find(type ? { type } : {}).sort({ at: 1 }).lean();
+  return ActivityEvent.find(type ? { type } : {}).sort({ at: 1, _id: 1 }).lean();
 }
 const rawUser = (user) => User.collection.findOne({ _id: user._id });
 async function makeTask(admin, assignees) {
