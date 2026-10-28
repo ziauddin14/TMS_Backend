@@ -17,9 +17,13 @@ const ALLOWED_MIME_TYPES = new Set([
   'image/webp',
 ]);
 
+// defParamCharset 'utf8': a browser sends a non-ASCII file name (an Urdu one) as raw UTF-8 bytes,
+// and multer's default ('latin1') read them as Latin-1, storing a garbled name. Names stored before
+// this are shown repaired (utils/fileName.js repairFileName); nothing stored is changed.
 const multerUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_SIZE_BYTES },
+  defParamCharset: 'utf8',
 });
 
 // Pure translation function, unit-testable without mocking multer's internals or streaming a
