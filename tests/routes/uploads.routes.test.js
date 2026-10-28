@@ -64,6 +64,24 @@ describe('POST /api/v1/uploads', () => {
     expect(mockFilesCreate).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps an Urdu file name intact (UTF-8, not read as Latin-1); the Drive copy gets the ASCII-safe name', async () => {
+    const user = await makeUser();
+    mockFilesCreate.mockResolvedValue({ data: { id: 'drive-2', webViewLink: 'https://drive.google.com/file/2' } });
+    mockPermissionsCreate.mockResolvedValue({});
+
+    const res = await request(app)
+      .post('/api/v1/uploads')
+      .set('Authorization', `Bearer ${tokenFor(user)}`)
+      .attach('file', Buffer.from('%PDF-1.4 fake pdf content'), {
+        filename: 'اجلاس کی رپورٹ.pdf', // sent as raw UTF-8 bytes, as a browser sends it
+        contentType: 'application/pdf',
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.fileName).toBe('اجلاس کی رپورٹ.pdf');
+    expect(mockFilesCreate.mock.calls[0][0].requestBody.name).toMatch(/^\d+_[_.a-zA-Z0-9-]+\.pdf$/);
+  });
+
   it('rejects an unauthenticated request', async () => {
     const res = await request(app)
       .post('/api/v1/uploads')

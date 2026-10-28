@@ -585,6 +585,41 @@ describe('generateExcel (exceljs, real generation, rewritten grouped structure)'
     expect(headerCandidateRow.getCell(1).fill.fgColor.argb).toBe('FF1F6F3F');
   });
 
+  it('an attachment name stored garbled is shown repaired in the Excel, Word and HTML (PDF/JPEG) reports', async () => {
+    const admin = await makeAdmin();
+    const assignee = await makeUser({ name: 'Ali' });
+    const lookup = await makeLookup();
+    const task = await taskService.createTask(
+      { id: admin.id },
+      { title: 'Collect boxes', assignees: [assignee._id], responsibility: lookup.value, deadline: inDays(5) }
+    );
+    const name = 'اجلاس کی رپورٹ.pdf';
+    const garbled = Buffer.from(name, 'utf8').toString('latin1'); // how the old upload stored it
+    await taskUpdateService.createUpdate({ id: admin.id, role: 'admin' }, task.id, {
+      description: 'Progress',
+      completionPercent: 40,
+      attachment: { driveFileId: 'd1', fileName: garbled, url: 'https://drive.google.com/file/d1' },
+    });
+    const data = await reportService.buildReportData({ id: admin.id, role: 'admin' }, {}, {});
+    const headerInfo = reportService.buildHeaderInfo({ id: admin.id, name: admin.name, responsibility: admin.responsibility }, {});
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(await reportService.generateExcel(data, { headerInfo }));
+    const excelText = [];
+    workbook.worksheets[0].eachRow((row) => row.eachCell((cell) => excelText.push(String(cell.value?.text ?? cell.value ?? ''))));
+    expect(excelText).toContain(name);
+    expect(excelText.join(' | ')).not.toContain(garbled);
+
+    const docx = await JSZip.loadAsync(await reportService.generateDocx(data, { headerInfo }));
+    const docxXml = await docx.file('word/document.xml').async('string');
+    expect(docxXml).toContain(name);
+    expect(docxXml).not.toContain(garbled);
+
+    const html = reportService.renderReportHtml(data.groups, { headerInfo });
+    expect(html).toContain(name);
+    expect(html).not.toContain(garbled);
+  });
+
   it('"All Data" (no filter) is NOT printed as its own redundant line', async () => {
     const admin = await makeAdmin();
     const data = { groups: [] };

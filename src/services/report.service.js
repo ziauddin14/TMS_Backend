@@ -28,6 +28,7 @@ const User = require('../models/User');
 const taskService = require('./task.service');
 const dashboardService = require('./dashboard.service');
 const { formatDateShort } = require('../utils/formatDate');
+const { repairFileName } = require('../utils/fileName');
 
 // "Unpaginated, all matching rows" (docs/06-backend.md §9) implemented by calling the existing,
 // unmodified listTasks with a limit far beyond this project's confirmed scale (docs/01-architecture.md
@@ -277,9 +278,11 @@ function formatRemainingDaysLabel(timeStatus) {
   }
 }
 
+// The attachment's file name as the reports show it — repaired if it was stored garbled
+// (utils/fileName.js); nothing stored is changed.
 function attachmentLabel(attachment) {
   if (!attachment) return '-';
-  return attachment.fileName || attachment.url || '-';
+  return repairFileName(attachment.fileName) || attachment.url || '-';
 }
 
 // Prompt — purely a REPORT-DISPLAY convenience: "(01) Title", "(02) Title", ... in front of a
@@ -482,7 +485,7 @@ ${bodyHtml}
 
 function attachmentCellHtml(attachment) {
   if (!attachment) return '-';
-  const label = escapeHtml(attachment.fileName || 'Attachment');
+  const label = escapeHtml(repairFileName(attachment.fileName) || 'Attachment');
   return attachment.url ? `<a href="${escapeHtml(attachment.url)}">${bdi(label)}</a>` : bdi(label);
 }
 
