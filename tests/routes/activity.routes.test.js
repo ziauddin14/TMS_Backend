@@ -309,3 +309,21 @@ describe('action hooks — the right type, small safe metadata', () => {
     await activityService.flushForTests();
   });
 });
+
+describe('the events list — newest first', () => {
+  it('two events recorded in the same millisecond keep the order they were recorded in: _id breaks the tie', async () => {
+    const admin = await makeAdmin();
+    const at = new Date();
+    const earlier = new mongoose.Types.ObjectId();
+    const later = new mongoose.Types.ObjectId();
+    // Stored in the order they were recorded in. Sorted on `at` alone, the { user, at } index keeps
+    // equal times in storage order — the older event first, the wrong way round for this list.
+    await ActivityEvent.collection.insertOne({ _id: earlier, user: admin._id, type: 'TASK_UPDATE_CREATED', at, taskId: null, metadata: {} });
+    await ActivityEvent.collection.insertOne({ _id: later, user: admin._id, type: 'TASK_CLOSED', at, taskId: null, metadata: {} });
+
+    const res = await request(app).get(`/api/v1/admin/activity/users/${admin.id}/events`).set(as(admin));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((e) => e.id)).toEqual([String(later), String(earlier)]);
+  });
+});

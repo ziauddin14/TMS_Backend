@@ -136,7 +136,9 @@ async function findUserOr404(userId) {
 }
 
 // GET /admin/activity/users/:id/events — one person's events, newest first. `from` / `to` are
-// Pakistan calendar dates (YYYY-MM-DD), both whole days included.
+// Pakistan calendar dates (YYYY-MM-DD), both whole days included. Two events recorded in the same
+// millisecond (a close with a final reply logs its update and its close together) keep the order
+// they were recorded in: _id breaks the tie.
 async function listEvents(userId, { type, from, to, page = 1, limit = 20 } = {}) {
   await findUserOr404(userId);
   const filter = { user: new mongoose.Types.ObjectId(userId) };
@@ -148,7 +150,7 @@ async function listEvents(userId, { type, from, to, page = 1, limit = 20 } = {})
   }
   const skip = (page - 1) * limit;
   const [items, total] = await Promise.all([
-    ActivityEvent.find(filter).sort({ at: -1 }).skip(skip).limit(limit).populate('taskId', 'codeNumber').lean(),
+    ActivityEvent.find(filter).sort({ at: -1, _id: -1 }).skip(skip).limit(limit).populate('taskId', 'codeNumber').lean(),
     ActivityEvent.countDocuments(filter),
   ]);
   return {
