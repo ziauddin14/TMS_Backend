@@ -26,4 +26,4 @@ const listTaskUpdatesQuerySchema = z
   })
   .strict();
 
-module.exports = { createTaskUpdateSchema, listTaskUpdatesQuerySchema };
+module.exports = { attachmentSchema, createTaskUpdateSchema, listTaskUpdatesQuerySchema };

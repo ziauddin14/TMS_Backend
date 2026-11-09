@@ -51,9 +51,23 @@ const updateTask = asyncHandler(async (req, res) => {
   sendSuccess(res, { data: serializeTask(task, req.user) });
 });
 
-// PATCH /tasks/:id/close — Admin only
+// PATCH /tasks/:id/close — Admin only. No body: the plain close, as always. With a final reply
+// (validators/task.validator.js closeTaskSchema): the reply and the close in one transaction, logged
+// as what they are — the update entry first (same metadata as any update; never `reopened`), then
+// the close. Two records in this order also sort in this order (activityAdmin.service.js).
+// No notification either way.
 const closeTask = asyncHandler(async (req, res) => {
-  const task = await taskService.closeTask(req.user, req.params.id);
+  let task;
+  if (Object.keys(req.body).length === 0) {
+    task = await taskService.closeTask(req.user, req.params.id);
+  } else {
+    const result = await taskService.closeTaskWithFinalReply(req.user, req.params.id, req.body);
+    task = result.task;
+    activityService.record(req, ACTIVITY_TYPES.TASK_UPDATE_CREATED, {
+      taskId: task._id,
+      metadata: { taskCode: task.codeNumber, completionPercent: result.reply.completionPercent, hasAttachment: Boolean(result.reply.attachment?.url) },
+    });
+  }
   activityService.record(req, ACTIVITY_TYPES.TASK_CLOSED, { taskId: task._id, metadata: { taskCode: task.codeNumber } });
   sendSuccess(res, { data: serializeTask(task, req.user) });
 });
