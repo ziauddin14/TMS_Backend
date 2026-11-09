@@ -7,6 +7,7 @@ const validate = require('../middleware/validate.middleware');
 const {
   createTaskSchema,
   updateTaskSchema,
+  closeTaskSchema,
   listTasksQuerySchema,
   editSyntheticRatingSchema,
   removeSyntheticRatingSchema,
@@ -24,7 +25,8 @@ router.get('/:id', tasksController.getTask);
 
 router.post('/', requireRole('admin'), validate(createTaskSchema), tasksController.createTask);
 router.patch('/:id', requireRole('admin'), validate(updateTaskSchema), tasksController.updateTask);
-router.patch('/:id/close', requireRole('admin'), tasksController.closeTask);
+// The body is optional: none closes the task as always; a final reply is saved with the close.
+router.patch('/:id/close', requireRole('admin'), validate(closeTaskSchema), tasksController.closeTask);
 
 // Task receipt — any signed-in person, for their OWN receipt only (receipt.service.js acknowledge):
 // someone not on the task gets 403, someone on it with nothing to confirm 409.

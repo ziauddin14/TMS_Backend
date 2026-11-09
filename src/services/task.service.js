@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const Task = require('../models/Task');
+const TaskUpdate = require('../models/TaskUpdate');
 const User = require('../models/User');
 const Counter = require('../models/Counter');
 const HistoricalImportRecord = require('../models/HistoricalImportRecord');
@@ -92,13 +93,19 @@ function computeTimeStatus(task, now = new Date()) {
       : { type: 'overdue', days: Math.abs(diffDays) };
   }
   if (task.status === 'complete' || task.status === 'closed') {
-    const referenceDate = completionReferenceDate(task);
-    const diffDays = daysBetween(task.deadline, referenceDate);
-    return diffDays >= 0
-      ? { type: 'early', days: diffDays }
-      : { type: 'late', days: Math.abs(diffDays) };
+    return finishedTimeStatus(task.deadline, completionReferenceDate(task));
   }
   return { type: 'remaining', days: 0 };
+}
+
+// A finished (complete or closed) task's early/late, judged on the date given — computeTimeStatus
+// passes completionReferenceDate; a close with a final reply passes the date read BEFORE the reply
+// (closeTaskWithFinalReply).
+function finishedTimeStatus(deadline, referenceDate) {
+  const diffDays = daysBetween(deadline, referenceDate);
+  return diffDays >= 0
+    ? { type: 'early', days: diffDays }
+    : { type: 'late', days: Math.abs(diffDays) };
 }
 
 // The reminder engine's rule (reminder-engine.service.js maintainTaskState): an ongoing task whose
@@ -477,6 +484,77 @@ async function closeTask(adminUser, taskId) {
   return Task.findById(task._id).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate(RECEIPT_USERS);
 }
 
+// PATCH /tasks/:id/close WITH a final reply (docs/05-apis.md §5): the admin's last word on the task
+// — its percent, text and an optional file — saved and the task closed in ONE transaction, so both
+// are written or neither is.
+//
+// The reply is a real TaskUpdate (dated now, written by the admin) and becomes the task's last
+// update: completionPercent, and lastUpdateAt — the "آخری اپڈیٹ" date shown everywhere — set to the
+// reply's own date. It is not an ordinary update (applyNewUpdateToTask) though:
+// - the status goes straight to 'closed': the task is never reopened or completed on the way, so no
+//   TASK_REOPENED notice, no receipt comes back to life (receipts act on open tasks only), and
+//   completedAt is neither set nor removed;
+// - lateness is judged on the date a close WITHOUT a reply would use, read BEFORE the reply is
+//   applied: completedAt ?? the last update before this one ?? the close itself
+//   (completionReferenceDate). The reply can therefore never make a task later than it was. The
+//   result is stored in timeStatus — the one place every later reader (table, reports, exports,
+//   rating) takes it from; nothing computes a closed task's timeStatus again;
+// - the rating is the close's own (applyComputedRating), from the reply's percent: a real rating
+//   from it, an estimate replaced by it, a final rating re-banded with the lateness above.
+// A closed task is refused, as for any update. Returns the reply and the closed task, populated.
+async function closeTaskWithFinalReply(adminUser, taskId, { description, completionPercent, attachment }) {
+  if (!mongoose.Types.ObjectId.isValid(taskId)) {
+    throw new AppError('Task not found.', 404, 'TASK_NOT_FOUND');
+  }
+
+  const session = await mongoose.startSession();
+  let replyId;
+  try {
+    await session.withTransaction(async () => {
+      const task = await Task.findById(taskId).session(session);
+      if (!task) {
+        throw new AppError('Task not found.', 404, 'TASK_NOT_FOUND');
+      }
+      if (task.status === 'closed') {
+        throw new AppError('Yeh kaam close ho chuka hai', 400, 'VALIDATION_ERROR');
+      }
+
+      const closedAt = new Date();
+      // Read before anything below moves lastUpdateAt.
+      const referenceDate = completionReferenceDate({
+        completedAt: task.completedAt,
+        lastUpdateAt: task.lastUpdateAt,
+        closedAt,
+        updatedAt: task.updatedAt,
+      });
+
+      const [reply] = await TaskUpdate.create(
+        [{ taskId: task._id, updatedBy: adminUser.id, description, completionPercent, attachment: attachment ?? null }],
+        { session }
+      );
+      replyId = reply._id;
+
+      task.completionPercent = completionPercent;
+      task.lastUpdateAt = reply.createdAt;
+      task.status = 'closed';
+      task.closedBy = adminUser.id;
+      task.closedAt = closedAt;
+      task.timeStatus = finishedTimeStatus(task.deadline, referenceDate);
+      applyComputedRating(task, { actorId: adminUser.id, now: closedAt, note: 'synthetic rating replaced by the real rating — task closed' });
+
+      await task.save({ session });
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const [reply, task] = await Promise.all([
+    TaskUpdate.findById(replyId).populate('updatedBy', 'name role responsibility'),
+    Task.findById(taskId).populate('assignees', 'name responsibility').populate('createdBy', 'name').populate(RECEIPT_USERS),
+  ]);
+  return { reply, task };
+}
+
 // ---- Admin edits of a developer-assigned (synthetic) rating --------------------------------
 // Both write with one targeted update — exactly performanceRating, the named syntheticRating
 // fields and one new history entry — and with timestamps:false, so nothing else on the task can
@@ -654,6 +732,7 @@ module.exports = {
   createTask,
   updateTaskFields,
   closeTask,
+  closeTaskWithFinalReply,
   computeTimeStatus,
   completionReferenceDate,
   applyOverdueRule,

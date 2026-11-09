@@ -1,4 +1,5 @@
 const { z } = require('zod');
+const { attachmentSchema } = require('./taskUpdate.validator');
 
 // Existence/active-status of each id is checked in task.service.js (docs/06-backend.md §4.2
 // step 1) — this schema only checks shape, so a malformed id reaches the service's uniform
@@ -81,6 +82,27 @@ const removeSyntheticRatingSchema = z
   .optional()
   .transform((body) => body ?? {});
 
+// PATCH /tasks/:id/close — Admin only. The body is optional: none (or {}) closes the task exactly as
+// it always has. Otherwise it is the admin's final reply, saved with the close in one go
+// (task.service.js closeTaskWithFinalReply): the fields of an update (POST /tasks/:id/updates),
+// with the description required at 3 characters or more — the same minimum the update form asks
+// for — and description + completionPercent both required once any field is sent.
+const closeTaskSchema = z
+  .object({
+    description: z.string().trim().min(3, 'Description must be at least 3 characters').optional(),
+    completionPercent: z.coerce.number().min(0).max(100).optional(),
+    attachment: attachmentSchema.optional(),
+  })
+  .strict()
+  .superRefine((body, ctx) => {
+    if (Object.keys(body).length === 0) return;
+    ['description', 'completionPercent'].forEach((field) => {
+      if (body[field] === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is required with a final reply` });
+    });
+  })
+  .optional()
+  .transform((body) => body ?? {});
+
 // POST /tasks/:id/acknowledge — no body at all: the receipt confirmed is always the caller's own.
 const acknowledgeTaskSchema = z
   .object({})
@@ -90,6 +112,7 @@ const acknowledgeTaskSchema = z
 
 module.exports = {
   createTaskSchema,
+  closeTaskSchema,
   acknowledgeTaskSchema,
   updateTaskSchema,
   listTasksQuerySchema,
